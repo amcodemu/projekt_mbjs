@@ -846,6 +846,10 @@ with tab1:
 # [TAB 2] 기록하기
 # =========================================================
 with tab2:
+    # ★★★ [추가] KST 시간 설정 ★★★
+    now_kst = get_current_kst()
+    today_str = now_kst.strftime('%Y-%m-%d')
+    
     # 1. 미션 진행도 카드 (사이드바에서 이사 옴)
     current_weight = 0.0
     try:
@@ -898,8 +902,8 @@ with tab2:
         
         with st.container(border=True):
             if not df.empty:
-                today_str = datetime.now().strftime("%Y-%m-%d") # KST 고려 안해도 됨 (기록용이니까)
-                today_df = df[df['Date'] == today_str]
+                df['Date_Clean'] = pd.to_datetime(df['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                today_df = df[df['Date_Clean'] == today_str]
                 
                 total_cal = 0
                 total_workout = 0
@@ -929,8 +933,9 @@ with tab2:
                 rules = get_mission_rules(mission['mission_id'])
                 if 'alcohol_ban' in rules:
                     ban_month = rules['alcohol_ban'].get('month')
-                    if datetime.now().month == ban_month:
-                        c3.metric("Dry Feb", f"{datetime.now().day}/28일")
+                    # ★★★ [수정] datetime.now() → now_kst ★★★
+                    if now_kst.month == ban_month:
+                        c3.metric("Dry Feb", f"{now_kst.day}/28일")
     except:
         pass
     
@@ -940,7 +945,7 @@ with tab2:
         with st.form("log_form", clear_on_submit=True):
             col1, col2, col3, col4 = st.columns([1.5, 0.6, 0.6, 2])
             with col1:
-                log_date = st.date_input("날짜", datetime.now(), label_visibility="collapsed")
+                log_date = st.date_input("날짜", now_kst.date(), label_visibility="collapsed")
             with col2:
                 current_hour_kst = get_current_kst().hour
                 hour = st.selectbox("시", range(24), index=current_hour_kst, label_visibility="collapsed")
