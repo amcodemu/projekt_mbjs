@@ -942,9 +942,13 @@ with tab2:
             with col1:
                 log_date = st.date_input("날짜", datetime.now(), label_visibility="collapsed")
             with col2:
-                hour = st.selectbox("시", range(24), index=datetime.now().hour, label_visibility="collapsed")
+                current_hour_kst = get_current_kst().hour
+                hour = st.selectbox("시", range(24), index=current_hour_kst, label_visibility="collapsed")
             with col3:
-                minute = st.selectbox("분", list(range(0, 60, 5)), label_visibility="collapsed")
+                current_minute_kst = get_current_kst().minute
+                rounded_minute = (current_minute_kst // 5) * 5  # 5분 단위로 반올림
+                minute_index = rounded_minute // 5
+                minute = st.selectbox("분", list(range(0, 60, 5)), index=minute_index, label_visibility="collapsed")
             with col4:
                 category = st.selectbox(
                     "카테고리",
