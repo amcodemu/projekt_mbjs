@@ -4,22 +4,68 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from openai import OpenAI
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import altair as alt
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
-from datetime import timedelta
+import numpy as np
+import os
+
+# ==========================================
+# [캐시 헬퍼 함수] 파일 기반 영구 저장
+# ==========================================
+
+CACHE_DIR = "/tmp/mbjs_cache"
+
+def save_checkin_cache(date_key, data):
+    """데일리 체크인 결과를 파일로 저장"""
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        cache_file = os.path.join(CACHE_DIR, f"checkin_{date_key}.json")
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        st.error(f"캐시 저장 실패: {e}")
+        return False
+
+def load_checkin_cache(date_key):
+    """데일리 체크인 결과를 파일에서 로드"""
+    try:
+        cache_file = os.path.join(CACHE_DIR, f"checkin_{date_key}.json")
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return None
+    except Exception as e:
+        st.error(f"캐시 로드 실패: {e}")
+        return None
+
+def clear_old_caches(keep_days=7):
+    """7일 이상 된 캐시 파일 삭제"""
+    try:
+        if not os.path.exists(CACHE_DIR):
+            return
+        
+        now = datetime.now()
+        for filename in os.listdir(CACHE_DIR):
+            if not filename.startswith("checkin_"):
+                continue
+            filepath = os.path.join(CACHE_DIR, filename)
+            file_age_days = (now - datetime.fromtimestamp(os.path.getmtime(filepath))).days
+            if file_age_days > keep_days:
+                os.remove(filepath)
+    except Exception as e:
+        pass  # 조용히 실패
 
 # ==========================================
 # [설정 구역] API 키 및 상수
 # ==========================================
 
-
-# 로컬 vs 배포 환경 구분
 if "OPENAI_API_KEY" in st.secrets:
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 else:
-    OPENAI_API_KEY = "sk-proj-tbiqL6AIgpabIVUKosWY..."  # 로컬용
+    OPENAI_API_KEY = ""
 
 SHEET_NAME = "Projekt_MBJS_DB"
 CALENDAR_IDS = {
@@ -27,740 +73,970 @@ CALENDAR_IDS = {
     "Termin": "u125ev7cv5du60n94crf4naqak@group.calendar.google.com"
 }
 
-# --- 1. 디자인 설정 ---
-st.set_page_config(page_title="Projekt MBJS", layout="wide", page_icon="🧬")
+# --- 디자인 설정 ---
+st.set_page_config(page_title="Dr. MBJS", layout="wide", page_icon="🧬")
 
-st.markdown("""
+# 사이드바 완전 제거 및 UI 모던하게 리스타일링
+hide_streamlit_style = """
 <style>
-    .stApp { background-color: #F5F7FA; color: #1A2B4D; font-family: 'Inter', sans-serif; }
-    .stTabs [data-baseweb="tab-list"] { gap: 20px; }
+    /* 1. 기본 Streamlit 숨김 요소 */
+    [data-testid="stDecoration"] {display: none;}
+    [data-testid="stToolbar"] {visibility: hidden;}
+    .stDeployButton {display: none;}
+    footer {visibility: hidden;}
+    [data-testid="stSidebar"] {display: none;}
+    section[data-testid="stSidebar"] {display: none;}
+    header {background-color: transparent !important;}
+
+    /* 2. 전체 배경 및 폰트 설정 */
+    .stApp {
+        background-color: #F8FAFC; /* 아주 연한 쿨그레이 배경 */
+        color: #1E293B; 
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    .block-container { padding-top: 2rem; padding-bottom: 5rem; max-width: 1000px; }
+
+    /* 3. [핵심] 탭 버튼 스타일링 (못생긴 탭 성형수술) */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px; /* 탭 사이 간격 */
+        background-color: transparent;
+        border-bottom: none; /* 하단 줄 제거 */
+        padding-bottom: 10px;
+    }
+
+    /* 선택되지 않은 탭 (기본 상태) */
     .stTabs [data-baseweb="tab"] {
-        height: 50px; white-space: pre-wrap; background-color: #FFFFFF;
-        border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-        font-weight: 600; color: #7F8C9D; border: none;
+        height: 55px;
+        background-color: #FFFFFF;
+        border-radius: 12px; /* 둥근 모서리 */
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05); /* 살짝 그림자 */
+        border: 1px solid #E2E8F0;
+        color: #64748B; /* 회색 텍스트 */
+        font-weight: 600;
+        font-size: 16px;
+        transition: all 0.2s ease-in-out; /* 부드러운 전환 효과 */
+        flex-grow: 1; /* 꽉 차게 */
     }
+
+    /* 마우스 올렸을 때 (Hover) */
+    .stTabs [data-baseweb="tab"]:hover {
+        background-color: #F1F5F9;
+        color: #334155;
+        border-color: #CBD5E1;
+    }
+
+    /* 선택된 탭 (Active) */
     .stTabs [aria-selected="true"] {
-        background-color: #E3F2FD !important; color: #007AFF !important; border: 1px solid #007AFF !important;
+        background-color: #1A2B4D !important; /* 닥터 MBJS 시그니처 네이비 */
+        color: #FFFFFF !important; /* 흰색 텍스트 */
+        border: none !important;
+        box-shadow: 0 4px 6px -1px rgba(26, 43, 77, 0.3) !important; /* 깊이감 있는 그림자 */
+        transform: translateY(-2px); /* 살짝 위로 올라오는 효과 */
     }
+
+    /* 탭 아래 빨간 줄(Highlight) 제거 (버튼 스타일이라 필요 없음) */
+    .stTabs [data-baseweb="tab-highlight"] {
+        display: none;
+    }
+
+    /* 4. 컨테이너 박스 스타일링 (카드 디자인) */
     div[data-testid="stVerticalBlockBorderWrapper"] > div {
-        background-color: #FFFFFF !important; border-radius: 20px !important;
-        border: 1px solid #E1E5EB !important; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03) !important;
-        padding: 20px !important;
+        background-color: #FFFFFF !important;
+        border-radius: 16px !important;
+        border: 1px solid #F1F5F9 !important;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
+        padding: 24px !important;
     }
-    div[data-testid="stMetricValue"] { color: #007AFF !important; font-weight: 800 !important; }
-    input[type="text"], input[type="number"], .stDateInput input, div[data-baseweb="select"] > div {
-        background-color: #FFFFFF !important; color: #1A2B4D !important;
-        border: 1px solid #E6E8EB !important; border-radius: 10px !important;
+    
+    /* 5. 메트릭(숫자) 스타일 */
+    div[data-testid="stMetricValue"] {
+        color: #1A2B4D !important;
+        font-weight: 800 !important;
+        font-size: 28px !important;
     }
-    button[kind="primaryFormSubmit"] {
-        background: linear-gradient(135deg, #007AFF 0%, #0055FF 100%) !important;
-        border: none !important; box-shadow: 0 4px 10px rgba(0, 122, 255, 0.2) !important;
+    div[data-testid="stMetricLabel"] {
+        color: #64748B !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
     }
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# --- 2. 백엔드 함수 (모든 기능 통합) ---
+# --- 백엔드 함수 ---
 
-@st.cache_resource #같은 시트를 반복 로드할 때 캐시 사용
+def get_current_kst():
+    """시스템 시간이 UTC인지 KST인지 자동으로 판단하여 한국 시간을 반환"""
+    sys_now = datetime.now()
+    # 시스템 시간이 UTC(영국)와 5분 이내로 비슷하면 +9시간 보정
+    if abs((sys_now - datetime.utcnow()).total_seconds()) < 300:
+        return sys_now + timedelta(hours=9)
+    # 차이가 크면 이미 KST(또는 로컬)로 간주하고 그대로 사용
+    return sys_now
+
+
+def get_mission_date_key():
+    """오전 5시 기준으로 날짜 키 생성 (스마트 KST 적용)"""
+    now_kst = get_current_kst() # <--- 여기 수정됨
+    
+    if now_kst.hour < 5: 
+        return (now_kst - timedelta(days=1)).strftime('%Y-%m-%d')
+    return now_kst.strftime('%Y-%m-%d')
+
+@st.cache_resource
 def get_db_connection(worksheet_name):
+    """Google Sheets 연결"""
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    # 로컬 vs 배포 환경 구분
     if "gcp_service_account" in st.secrets:
-        # 배포 환경: Streamlit Cloud
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
             st.secrets["gcp_service_account"], scope
         )
     else:
-        # 로컬 환경
         creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
     
     client = gspread.authorize(creds)
     sheet = client.open(SHEET_NAME).worksheet(worksheet_name)
     return sheet
 
+@st.cache_data(ttl=3600)
+def get_active_mission():
+    """현재 진행 중인 미션 조회"""
+    try:
+        sheet = get_db_connection("Missions")
+        data = sheet.get_all_records()
+        for row in data:
+            if row['Status'] == '진행중':
+                return {
+                    'mission_id': row['Mission_ID'],
+                    'name': row['Name'],
+                    'start_date': datetime.strptime(row['Start_Date'], '%Y-%m-%d'),
+                    'end_date': datetime.strptime(row['End_Date'], '%Y-%m-%d'),
+                    'start_weight': float(row['Start_Wt']),
+                    'target_weight': float(row['Target_Wt']),
+                    'daily_calories': int(row['Daily_Cal'])
+                }
+        return None
+    except Exception as e:
+        return None
+
+@st.cache_data(ttl=3600)
+def get_mission_rules(mission_id):
+    """미션별 규칙 조회"""
+    try:
+        sheet = get_db_connection("Mission_Rules")
+        data = sheet.get_all_records()
+        rules = {}
+        for row in data:
+            if row['Mission_ID'] == mission_id:
+                try:
+                    rules[row['Rule_Type']] = json.loads(row['Rule_Value'])
+                except:
+                    rules[row['Rule_Type']] = row['Rule_Value']
+        return rules
+    except:
+        return {}
+
+def calculate_mission_status(current_weight):
+    """현재 미션 진행 상황 계산"""
+    mission = get_active_mission()
+    if not mission:
+        return {'active': False, 'message': '진행 중인 미션이 없습니다'}
+    
+    now = datetime.now()
+    total_days = (mission['end_date'] - mission['start_date']).days
+    days_passed = max(0, (now - mission['start_date']).days)
+    days_remaining = max(0, (mission['end_date'] - now).days)
+    
+    progress_pct = min(100, max(0, (days_passed / total_days) * 100))
+    target_loss = mission['start_weight'] - mission['target_weight']
+    actual_loss = mission['start_weight'] - current_weight
+    weight_progress_pct = min(100, max(0, (actual_loss / target_loss) * 100)) if target_loss > 0 else 0
+    
+    return {
+        'active': True,
+        'mission_id': mission['mission_id'],
+        'name': mission['name'],
+        'days_remaining': days_remaining,
+        'days_passed': days_passed,
+        'total_days': total_days,
+        'progress_pct': progress_pct,
+        'weight_progress_pct': weight_progress_pct,
+        'target_weight': mission['target_weight'],
+        'start_weight': mission['start_weight'],
+        'current_weight': current_weight,
+        'daily_calories': mission['daily_calories'],
+        'weekly_target_loss': target_loss / (total_days / 7),
+        'actual_loss': actual_loss,
+        'target_loss': target_loss
+    }
+
+def validate_mission_rules(mission_id, category, user_input):
+    rules = get_mission_rules(mission_id)
+    violations = []
+    if '음주' in category and 'alcohol_ban' in rules:
+        ban_rule = rules['alcohol_ban']
+        current_month = datetime.now().month
+        if current_month == ban_rule.get('month'):
+            violations.append({
+                'type': 'alcohol_ban',
+                'severity': ban_rule.get('penalty', 'warning'),
+                'message': f"🚫 **Dry February 위반!**\n\n{current_month}월은 완전 금주를 약속했습니다."
+            })
+    return violations
+
+# ==========================================
+# [AI 로직 함수]
+# ==========================================
+
+def analyze_patterns(df_health, df_action):
+    patterns = []
+    if df_health.empty or df_action.empty:
+        return patterns
+    try:
+        alcohol_logs = df_action[df_action['Category'].str.contains('음주', na=False)]
+        if not alcohol_logs.empty:
+            patterns.append({'message': '최근 음주 기록이 있습니다. 수면 질 저하 주의.'})
+    except:
+        pass
+    return patterns
+
+def get_mission_date_key():
+    """오전 5시 기준으로 날짜 키 생성 (스마트 KST 적용)"""
+    now_kst = get_current_kst() # <--- 여기 수정됨
+    
+    if now_kst.hour < 5: 
+        return (now_kst - timedelta(days=1)).strftime('%Y-%m-%d')
+    return now_kst.strftime('%Y-%m-%d')
+
+def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=False):
+    """
+    30일 데이터 기반 AI 컨텍스트 생성 (스마트 KST, 상세 로그, 수면 데이터 통합 분석)
+    [업데이트] '2026. 2. 1. 오후 9:30' 포맷 파싱 로직 추가
+    """
+    
+    # 1. KST 시간 및 미션 상태 설정
+    now_kst = get_current_kst()
+    mission = calculate_mission_status(current_weight)
+    
+    # 오전 5시 기준 날짜 키 생성
+    if now_kst.hour < 5:
+        today_date_key = (now_kst - timedelta(days=1)).strftime('%Y-%m-%d')
+    else:
+        today_date_key = now_kst.strftime('%Y-%m-%d')
+
+    # ---------------------------------------------------------
+    # [최근 5일간의 상세 로그 텍스트 추출]
+    # ---------------------------------------------------------
+    five_days_ago = (datetime.strptime(today_date_key, '%Y-%m-%d') - timedelta(days=5)).strftime('%Y-%m-%d')
+    
+    recent_detailed_logs = df_action[df_action['Date'] >= five_days_ago].copy()
+    
+    if is_morning_fixed:
+        recent_detailed_logs = recent_detailed_logs[recent_detailed_logs['Date'] < today_date_key]
+    
+    if not recent_detailed_logs.empty:
+        recent_detailed_logs = recent_detailed_logs.sort_values(by=['Date', 'Action_Time'])
+        log_lines = []
+        for _, row in recent_detailed_logs.iterrows():
+            dt_obj = datetime.strptime(row['Date'], '%Y-%m-%d')
+            day_name = dt_obj.strftime("%a")
+            log_lines.append(f"- [{row['Date']} ({day_name}) {row['Action_Time']}] {row['Category']}: {row['User_Input']}")
+        recent_logs_text = "\n".join(log_lines)
+    else:
+        recent_logs_text = "최근 5일간 기록된 활동이 없습니다."
+
+    # ---------------------------------------------------------
+    # [Health Log 통계 계산]
+    # ---------------------------------------------------------
+    cutoff_30d = (datetime.strptime(today_date_key, '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
+    df_health_30d = df_health[df_health['Date'] >= cutoff_30d].copy()
+    df_action_30d = df_action[df_action['Date'] >= cutoff_30d].copy()
+    
+    if is_morning_fixed:
+        df_action_30d = df_action_30d[df_action_30d['Date'] < today_date_key]
+
+    # 1. 숫자 변환
+    cols_to_numeric = ['HRV', 'RHR', 'Sleep_duration']
+    for col in cols_to_numeric:
+        if col in df_health_30d.columns:
+            df_health_30d[col] = pd.to_numeric(df_health_30d[col], errors='coerce')
+
+    # 2. 7일 평균 계산
+    hrv_7d_avg = df_health_30d.tail(7)['HRV'].mean() if not df_health_30d.empty else 0
+    rhr_7d_avg = df_health_30d.tail(7)['RHR'].mean() if not df_health_30d.empty else 0
+    
+    # 3. [NEW] 수면 데이터 파싱 (한국형 포맷 대응)
+    sleep_info_str = "No sleep data available."
+    if 'Sleep_duration' in df_health_30d.columns and not df_health_30d.empty:
+        sleep_7d_avg = df_health_30d.tail(7)['Sleep_duration'].mean()
+        
+        last_row = df_health_30d.iloc[-1]
+        last_sleep_dur = last_row.get('Sleep_duration', 0)
+        raw_start_time = str(last_row.get('Sleep_start', '-')) # 예: "2026. 2. 1. 오후 9:30"
+        
+        parsed_bedtime = raw_start_time # 기본값 (파싱 실패시 원본 출력)
+        
+        # [핵심] "오후 9:30" -> "21:30" 변환 로직
+        try:
+            # "오전/오후"가 포함되어 있다면 한국형 포맷으로 간주
+            if "오전" in raw_start_time or "오후" in raw_start_time:
+                parts = raw_start_time.split() # 공백으로 쪼갬
+                # 예상: ['2026.', '2.', '1.', '오후', '9:30']
+                
+                am_pm = parts[-2] # 뒤에서 두번째 (오전/오후)
+                time_part = parts[-1] # 맨 뒤 (9:30)
+                hour, minute = map(int, time_part.split(':'))
+                
+                if am_pm == "오후" and hour != 12:
+                    hour += 12
+                elif am_pm == "오전" and hour == 12:
+                    hour = 0
+                
+                parsed_bedtime = f"{hour:02d}:{minute:02d}" # "21:30"
+            
+            # ISO 포맷 (2026-02-01 21:30:00)인 경우
+            elif len(raw_start_time) > 10 and ':' in raw_start_time:
+                parsed_bedtime = raw_start_time.split(' ')[1][:5]
+                
+        except:
+            pass # 파싱 에러나면 그냥 원본 텍스트(parsed_bedtime) 사용
+            
+        sleep_info_str = f"Avg Sleep (7d): {sleep_7d_avg:.1f} hrs\nLast Night: {last_sleep_dur:.1f} hrs (Bedtime: {parsed_bedtime})"
+    
+    # 알코올/운동 빈도
+    alcohol_count = len(df_action_30d[df_action_30d['Category'].str.contains('음주', na=False)])
+    exercise_count = len(df_action_30d[df_action_30d['Category'].str.contains('운동', na=False)])
+    
+    # 오늘 활동량
+    if is_morning_fixed:
+        today_calories = 0
+        today_exercise_min = 0
+        current_time_str = "Morning Check-in (Fixed Report)"
+    else:
+        today_actions = df_action[df_action['Date'] == today_date_key]
+        today_calories = 0
+        today_exercise_min = 0
+        for _, row in today_actions.iterrows():
+            try:
+                js = json.loads(row['AI_Analysis_JSON'])
+                if '섭취' in row['Category']: today_calories += js.get('calories', 0)
+                elif '운동' in row['Category']: today_exercise_min += js.get('time', 0)
+            except: continue
+        current_time_str = now_kst.strftime('%H:%M')
+        
+    patterns = analyze_patterns(df_health_30d, df_action_30d)
+    patterns_text = "\n".join([f"• {p['message']}" for p in patterns]) if patterns else "특이 패턴 없음"
+
+    context = f"""
+[USER PROFILE]
+Age: 35, Male
+Mission: {mission['name']}
+Current Weight: {current_weight}kg (Goal: {mission['target_weight']}kg)
+
+[RECENT DETAILED LOGS (Last 5 Days)]
+**CRITICAL:** These are the user's actual actions. Analyze cause-and-effect patterns based on THIS text.
+{recent_logs_text}
+
+[HEALTH STATS (Avg 7 Days & Sleep)]
+Avg HRV: {hrv_7d_avg:.1f}ms | Avg RHR: {rhr_7d_avg:.1f}bpm
+{sleep_info_str}
+Alcohol (30d): {alcohol_count} | Exercise (30d): {exercise_count}
+
+[PATTERNS]
+{patterns_text}
+
+[TODAY'S STATUS ({current_time_str})]
+Calories Consumed: {today_calories} kcal
+Exercise Done: {today_exercise_min} min
+"""
+    return context
+
+@st.cache_data(ttl=3600*24)
+def ai_generate_daily_checkin(date_key, hrv, rhr, weight, morning_context, calendar_str):
+    """Daily Check-in (하루 종일 고정 - 평일 업무 시간 규칙 적용됨)"""
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    
+    # 요일 확인 (date_key는 YYYY-MM-DD 문자열)
+    dt = datetime.strptime(date_key, '%Y-%m-%d')
+    weekday = dt.weekday() # 0=월, 4=금, 5=토, 6=일
+    day_name = dt.strftime('%A')
+
+    # [핵심] 평일 업무 시간 강제 규칙
+    if weekday < 5: # 평일 (월~금)
+        work_constraint = """
+        [CRITICAL CONSTRAINTS (Weekdays)]
+        - 06:00 ~ 19:00 is WORK TIME. User CANNOT go to gym or do heavy workout.
+        - Exception: During Lunch time (12:00~13:00), light walking or stair climbing is OK.
+        - Do NOT suggest morning workouts before work (User dislikes it).
+        - Focus on 'Post-work' (after 19:00) for main exercise missions.
+        """
+    else:
+        work_constraint = "[CONSTRAINTS (Weekend)] User is free. Suggest workouts based on condition."
+
+    prompt = f"""
+    You are 'Dr. MBJS', an elite performance coach for a 35-year-old male.
+    
+    [DATA CONTEXT]
+    {morning_context}
+
+    [TODAY'S VITALS]
+    Date: {date_key} ({day_name})
+    HRV: {hrv}ms | RHR: {rhr}bpm | Weight: {weight}kg
+    
+    [TODAY'S SCHEDULE]
+    {calendar_str}
+    
+    {work_constraint}
+
+    [TASK]
+    Generate a 'Daily Check-in' report.
+
+    **PART 1: Condition Diagnosis (Traffic Light)**
+    - Output signal: "Green", "Yellow", or "Red".
+
+    **PART 2: Root Cause Analysis (Why?)**
+    - Explain WHY condition is like this. Link past actions (Alcohol, Sleep, Workout) to current vitals.
+
+    **PART 3: Daily Mission (Schedule & Work-Aligned)**
+    - Propose specific actions for Workout, Diet, Recovery.
+    - **MUST** respect the Work Time constraints (No gym during 06-19 on weekdays).
+
+    [OUTPUT FORMAT - JSON Only]
+    {{
+        "condition_signal": "Green/Yellow/Red",
+        "condition_title": "One-line summary (Korean)",
+        "analysis": "Detailed analysis (Korean)",
+        "mission_workout": "Plan (Korean). Check work hours!",
+        "mission_diet": "Plan (Korean)",
+        "mission_recovery": "Plan (Korean)"
+    }}
+    """
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        return {"condition_signal": "Yellow", "condition_title": "Error", "analysis": str(e), "mission_workout": "-", "mission_diet": "-", "mission_recovery": "-"}
+
+
+@st.cache_data(ttl=60)
+def ai_generate_action_plan(hrv, rhr, weight, full_context, today_activities):
+    """Action Plan"""
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    
+    # 1. 스마트 시간 보정 (UTC면 +9, KST면 그대로)
+    now_kst = get_current_kst()
+    hours_left = 24 - now_kst.hour
+    weekday = now_kst.weekday()
+    
+    # 2. 활동 로그 텍스트 변환
+    activities_text = "\n".join([f"• {a}" for a in today_activities]) if today_activities else "아직 기록된 활동 없음"
+    
+    # 3. 평일/주말 근무 규칙 적용
+    if weekday < 5: 
+        constraint_text = """
+        [CRITICAL TIME CONSTRAINTS (Weekdays)]
+        - 06:00 ~ 19:00 is WORK TIME. NO GYM suggestions.
+        - Exception: Lunch (12:00~13:00) light walk OK.
+        - Focus on 'Post-work' (after 19:00) for main exercise.
+        """
+    else:
+        constraint_text = "[TIME CONSTRAINTS (Weekend)] User is free."
+    
+    # 4. 프롬프트 
+    prompt = f"""
+    You are 'Dr. MBJS', a 32-year-old female elite health performance coach.
+    
+    [PERSONA]
+    - **Professional & Analytical:** You analyze data sharply and objectively. Point out mistakes clearly. (Cold Brain)
+    - **Supportive & Affectionate:** You genuinely care about the user. You want them to succeed. After pointing out mistakes, encourage them warmly. (Warm Heart)
+    - **Language:** STRICT Korean Honorifics (존댓말, ~하십시오, ~해요). ABSOLUTELY NO Banmal.
+    
+    {full_context}
+
+    [CURRENT STATUS - {now_kst.strftime('%H:%M')}]
+    Day: {now_kst.strftime('%A')}
+    HRV: {hrv} | Weight: {weight}
+    Time remaining today: {hours_left} hours
+    
+    {constraint_text}
+    
+    [LOGS]
+    {activities_text}
+    
+    [TASK]
+    Create a tactical plan ONLY for the *remaining hours of today*.
+    
+    [STRICT OUTPUT RULES]
+    1. **NO GENERAL ADVICE:** Focus ONLY on remaining time today.
+    2. **FORMAT:** Single string with line breaks.
+       Example:
+       - [19:30] 코르티솔 수치 안정을 위해 10분간 가볍게 산책하십시오.
+       - [20:00] 금일 저녁 식사는 금지입니다. 간헐적 단식을 유지하세요.
+       - [22:00] 스마트폰 전원을 끄고 수면을 취하십시오.
+    3. **TONE:**
+       - If user messed up: "회원님, 어제 과음하셨군요. 데이터가 좋지 않습니다. 하지만 우리는 만회할 수 있습니다. 오늘 저녁은 참아봅시다."
+       - If user doing well: "아주 훌륭합니다. 이대로만 가면 목표 달성입니다."
+    
+    [OUTPUT FORMAT - JSON]
+    {{
+        "current_analysis": "Insightful analysis (Korean Honorifics)",
+        "next_actions": "Return a SINGLE STRING with line breaks. (Korean Honorifics)",
+        "warnings": "Warning if off-track (Korean Honorifics)"
+    }}
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+    except:
+        return {"current_analysis": "분석 중...", "next_actions": "데이터 대기 중...", "warnings": ""}
+
+
 def ai_parse_log(category, user_text, log_time, ref_data=""):
     client = OpenAI(api_key=OPENAI_API_KEY)
-    
-    # 1. 식단
-    if "섭취" in category:
-        system_role = f"""
-        You are a highly experienced Korean Nutritionist.
-        Estimate nutrition based on standard Korean serving sizes.
-        Rules: Rice(밥) 1 bowl=300kcal. Alcohol: Soju 1 btl=7 glasses , Beer 1 btl = 3 glasses , wine 1 btl = 14 glasses
-        Output JSON: {{"calories": int, "food_name": "str", "macros": "탄:xx 단:xx 지:xx", "alcohol_glasses": float}}
-        """
-        
-    # 2. 운동 (텔레메트리 데이터 추출)
-    elif "운동" in category:
-        system_role = """
-        You are a Sports Data Analyst. Extract exact workout metrics.
-        [Analysis Rules]
-        1. General: time(min), type, calories, avg_bpm, max_bpm.
-        2. **Benchmark Running (Telemetry):**
-           - Extract 'Cadence', 'Vertical Oscillation', 'GCT' if available.
-        Output JSON: 
-        {
-            "time": int, "intensity": int, "type": "str", 
-            "calories": int, "avg_bpm": int, "max_bpm": int,
-            "cadence": int, "vertical_osc": float, "gct": int, 
-            "summary": "str", "analysis": "str"
-        }
-        """
-    
-    # 3. 기타
-    else: 
-        system_role = "Health Logger."
-
-    prompt = f"Context: User logged [{category}] at [{log_time}]. Text: '{user_text}'. Role: {system_role}. Return ONLY JSON."
-    
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"}
-    )
-    return json.loads(response.choices[0].message.content)
-
-
-def summarize_recent_actions(df_act, days=3):
-    """
-    최근 N일간 Action_Log를 요약
-    목적: AI 원인 분석에 필요한 핵심 정보 추출
-    """
-    from datetime import datetime, timedelta
-    
-    cutoff = datetime.now() - timedelta(days=days)
-    cutoff_str = cutoff.strftime("%Y-%m-%d")
-    
-    # 최근 N일 데이터만 필터링
-    recent = df_act[df_act['Date'] >= cutoff_str]
-    
-    # 요약 딕셔너리 초기화
-    summary = {
-        "alcohol_glasses": 0,
-        "sodium_foods": 0,
-        "workout_minutes": 0,
-        "daily_logs": []  # 날짜별 주요 활동 텍스트
+    prompts = {
+        "섭취": "Nutritionist. Output JSON: {'calories': int, 'food_name': str, 'summary': str}",
+        "운동": "Sports Analyst. Output JSON: {'time': int, 'type': str, 'calories': int, 'avg_bpm': int, 'summary': str}",
+        "음주": "Alcohol Tracker. Output JSON: {'alcohol_type': str, 'standard_drinks': int, 'calories': int, 'summary': str}",
     }
-    
-    # 각 로그 순회하며 데이터 집계
-    for _, row in recent.iterrows():
-        try:
-            js = json.loads(row['AI_Analysis_JSON'])
-            date = row['Date']
-            category = row['Category']
-            
-            # 1. 알코올 집계
-            if "섭취" in category:
-                alcohol = js.get('alcohol_glasses', 0)
-                if alcohol > 0:
-                    summary['alcohol_glasses'] += alcohol
-                    summary['daily_logs'].append(
-                        f"{date}: 알코올 {int(alcohol)}잔"
-                    )
-                
-                # 2. 고염분 음식 체크
-                food = js.get('food_name', '')
-                if any(word in food for word in ['국밥', '찌개', '탕', '라면', '국물']):
-                    summary['sodium_foods'] += 1
-                    summary['daily_logs'].append(
-                        f"{date}: {food} (고염분)"
-                    )
-            
-            # 3. 운동 집계
-            elif "운동" in category:
-                workout_time = js.get('time', 0)
-                if workout_time > 0:
-                    summary['workout_minutes'] += workout_time
-                    workout_type = js.get('type', '운동')
-                    summary['daily_logs'].append(
-                        f"{date}: {workout_type} {workout_time}분"
-                    )
-        
-        except Exception as e:
-            # JSON 파싱 실패 시 무시
-            continue
-    
-    return summary
-
-
-@st.cache_data(ttl=300)  # 5분 동안 캐시
-def ai_analyze_cause(hrv, rhr, weight, action_summary):
-    """
-    바이오 지표 + 최근 활동 → AI가 원인 분석
-    """
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    
-    # 활동 로그를 텍스트로 변환
-    if action_summary['daily_logs']:
-        logs_text = "\n".join(action_summary['daily_logs'])
-    else:
-        logs_text = "기록 없음"
-    
-    # AI 프롬프트
-    prompt = f"""
-당신은 데이터 기반 건강 컨설턴트입니다.
-
-[오늘 측정값]
-- HRV: {hrv}ms (정상: 30-100ms, 3040 남성 평균: 40ms)
-- RHR: {rhr}bpm (정상: 60-70bpm)
-- 체중: {weight}kg
-
-[최근 3일 활동 기록]
-{logs_text}
-
-[분석 규칙]
-1. HRV/RHR 수치의 **직접적 원인**을 활동 기록에서 찾으세요.
-2. 추측 금지. 기록된 데이터만 근거로 사용하세요.
-3. 우선순위: 알코올 > 고염분 식단 > 과도한 운동 > 기타
-4. 활동 기록이 없으면 "데이터 부족으로 추정 불가"라고 명시하세요.
-5. 2-3문장으로 간결하게 작성하세요.
-
-[출력 형식 - 반드시 JSON]
-{{
-  "primary": "핵심 원인을 1문장으로",
-  "details": ["세부 근거 1", "세부 근거 2"],
-  "confidence": "high 또는 medium 또는 low"
-}}
-
-예시:
-{{
-  "primary": "1/28 알코올 14잔 섭취가 HRV 급락의 직접 원인입니다",
-  "details": ["간 해독 과정에서 자율신경계 억제", "1/29 고염분 식단으로 회복 지연"],
-  "confidence": "high"
-}}
-"""
-    
+    role = prompts.get(category.split()[1] if len(category.split())>1 else category, "Health Logger. JSON output.")
+    prompt = f"User logged [{category}] at [{log_time}]. Text: '{user_text}'. {role}"
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
-        result = json.loads(response.choices[0].message.content)
-        return result
-    
+        return json.loads(response.choices[0].message.content)
     except Exception as e:
-        # API 오류 시 기본 응답
-        return {
-            "primary": "분석 중 오류 발생",
-            "details": [str(e)],
-            "confidence": "low"
-        }
-
-@st.cache_data(ttl=300)
-def ai_generate_action_plan(condition_status, hrv, rhr, weight, action_summary, calendar_events):
-    """
-    컨디션 + 최근 활동 + 오늘 캘린더 일정 → AI가 맞춤형 액션 플랜 생성
-    """
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    
-    # 활동 로그 텍스트 변환
-    if action_summary['daily_logs']:
-        logs_text = "\n".join(action_summary['daily_logs'])
-    else:
-        logs_text = "기록 없음"
-    
-    # 캘린더 일정 텍스트 변환
-    calendar_text = []
-    for event in calendar_events.get("Sports", []):
-        calendar_text.append(f"[Sports] {event['time']} {event['title']}")
-    for event in calendar_events.get("Termin", []):
-        calendar_text.append(f"[Termin] {event['time']} {event['title']}")
-    
-    if calendar_text:
-        calendar_str = "\n".join(calendar_text)
-    else:
-        calendar_str = "일정 없음"
-    
-    # AI 프롬프트
-    prompt = f"""
-당신은 냉정하고 전문적인 건강 컨설턴트입니다.
-
-[현재 컨디션]
-- 상태: {condition_status} (RED=위험/YELLOW=주의/GREEN=최상)
-- HRV: {hrv}ms
-- RHR: {rhr}bpm
-- 체중: {weight}kg
-
-[최근 3일 활동]
-{logs_text}
-
-[오늘 일정]
-{calendar_str}
-
-[임무]
-오늘의 액션 플랜 3가지를 생성하세요:
-1. 💪 운동 가이드
-2. 🥗 식단 가이드
-3. 🔋 회복 가이드
-
-[사용자 상황 정보 - 반드시 고려할 것]
-1. **근무 시간 제약**
-   - 월~금 06:00-19:00은 업무 시간 → 이 시간에는 별도 활동 불가능
-   - 11:30-13:00 점심시간 → 필요시 30분 산책 또는 계단 오르기 조언 가능
-   - 주말은 시간 자유로움
-
-2. **가능한 회복 루틴**
-   - **사우나:** 1사이클 = 사우나 10분 → 냉탕 3분 → 휴식 5분
-   - 평소 2사이클 진행함
-   - 오늘 컨디션 고려해서 몇 사이클 권장할지, 또는 사우나 자체가 과부하인지 판단
-   - **명상:** 시간대와 길이 구체적으로
-   - **수면:** 취침 시각, 수면 시간, 수면 환경 조성 방법
-
-[중요 규칙]
-1. **오늘 캘린더 일정을 반드시 고려**하세요
-   - 운동 일정 있으면: 현재 컨디션으로 가능한지 판단
-   - 회식/약속 있으면: 알코올/식단 주의사항 명시
-   - 일정 과밀하면: 스트레스 관리 조언
-
-2. **컨디션 기반 우선순위**
-   - RED: 완전 휴식 우선, 일정 조정 권장
-   - YELLOW: 강도 낮춤, 조심스럽게 진행
-   - GREEN: 적극적 활동 권장
-
-3. **구체적이고 실행 가능하게**
-   - "적당히" 금지 → "Zone 2, 30분 이하" 같이 명확히
-   - "주의" 금지 → "소주 2잔 이하" 같이 수치로
-
-4. **간결하게**
-   - 각 항목당 1-2문장
-   
-[출력 형식 - JSON]
-{{
-  "workout": "운동 가이드 (캘린더 일정 반영)",
-  "diet": "식단 가이드 (캘린더 일정 반영)",
-  "recovery": "회복 가이드"
-}}
-
-예시:
-예시 1 (평일 RED 상태):
-{{
-  "workout": "19:00 퇴근 후 완전 휴식. 점심시간에 15분 가벼운 산책만 권장.",
-  "diet": "점심 회식 예정 확인. 알코올 금지, 국물 요리 피하고 단백질 위주 섭취.",
-  "recovery": "사우나 1사이클만 (현재 HRV로는 2사이클 과부하). 22:00 이전 취침, 명상 10분 후 수면."
-}}
-
-예시 2 (주말 GREEN 상태):
-{{
-  "workout": "오전 테니스 레슨 OK. 강도 높여도 무방, 레슨 후 쿨다운 필수.",
-  "diet": "운동 전 탄수화물 충분히, 운동 후 단백질 30g 이상 섭취.",
-  "recovery": "사우나 2사이클 진행 가능. 저녁 명상 15분, 23시 이전 취침으로 회복 최적화."
-}}
-
-예시 3 (평일 YELLOW, 사우나 과부하 판단):
-{{
-  "workout": "점심시간 계단 10층 오르기 2회. 퇴근 후 추가 운동 금지.",
-  "diet": "저염식 유지. 저녁 7시 이전 식사 완료.",
-  "recovery": "현재 RHR 72bpm으로 사우나는 심혈관 부담. 오늘은 명상 20분 + 미온욕으로 대체. 22:00 취침."
-}}
-"""
-    
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        result = json.loads(response.choices[0].message.content)
-        return result
-    
-    except Exception as e:
-        # 에러 시 기본 플랜
-        return {
-            "workout": "완전 휴식 권장",
-            "diet": "저염식 + 충분한 수분 섭취",
-            "recovery": "10시 30분 이전 취침",
-            "error": str(e)
-        }
-
-
-
+        return {"summary": user_text, "error": str(e)}
 
 def get_today_calendar_events():
     try:
-        # 로컬 vs 배포 환경 구분
         if "gcp_service_account" in st.secrets:
-            # 배포 환경: Streamlit Cloud
             creds = service_account.Credentials.from_service_account_info(
                 st.secrets["gcp_service_account"],
                 scopes=['https://www.googleapis.com/auth/calendar.readonly']
             )
         else:
-            # 로컬 환경
             creds = service_account.Credentials.from_service_account_file(
                 'service_account.json',
                 scopes=['https://www.googleapis.com/auth/calendar.readonly']
             )
         service = build('calendar', 'v3', credentials=creds)
         
-        # 오늘 날짜 범위 설정 (00:00 ~ 23:59)
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        now_kst = datetime.now() + timedelta(hours=9)
+        today_start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
         today_end = today_start + timedelta(days=1)
         
-        # ISO 8601 형식으로 변환
-        time_min = today_start.isoformat() + 'Z'
-        time_max = today_end.isoformat() + 'Z'
+        time_min = (today_start - timedelta(hours=9)).isoformat() + 'Z'
+        time_max = (today_end - timedelta(hours=9)).isoformat() + 'Z'
         
-        # 결과 저장
-        all_events = {
-            "Sports": [],
-            "Termin": []
-        }
-        
-        # 각 캘린더에서 이벤트 가져오기
+        all_events = {"Sports": [], "Termin": []}
         for cal_name, cal_id in CALENDAR_IDS.items():
             events_result = service.events().list(
-                calendarId=cal_id,
-                timeMin=time_min,
-                timeMax=time_max,
-                singleEvents=True,
-                orderBy='startTime'
+                calendarId=cal_id, timeMin=time_min, timeMax=time_max,
+                singleEvents=True, orderBy='startTime'
             ).execute()
-            
             events = events_result.get('items', [])
-            
             for event in events:
-                # 시간 추출
                 start = event['start'].get('dateTime', event['start'].get('date'))
-                start_time = datetime.fromisoformat(start.replace('Z', '+00:00'))
-                
-                # 이벤트 정보 저장
+                start_time = datetime.fromisoformat(start.replace('Z', '+00:00')) + timedelta(hours=9)
                 all_events[cal_name].append({
                     'title': event.get('summary', '(제목 없음)'),
-                    'time': start_time.strftime('%H:%M'),
-                    'description': event.get('description', '')
+                    'time': start_time.strftime('%H:%M')
                 })
-        
         return all_events
-    
-    except Exception as e:
-        # 에러 시 빈 결과 반환
-        return {"Sports": [], "Termin": [], "error": str(e)}
+    except:
+        return {"Sports": [], "Termin": []}
 
+# ==========================================
+# [메인 UI 구조 - 3단 탭]
+# ==========================================
 
+# 헤더 영역
+st.markdown("## 🧬 Dr. MBJS")
+col1, col2 = st.columns([5, 1])
+with col1:
+    st.caption("무병장수 Command Center")
+with col2:
+    if st.button("🔄", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
+st.divider()
 
-# --- 3. 메인 UI 구성 (사이드바 메뉴로 페이지 전환) ---
-
-with st.sidebar:
-    st.header("🧬 Projekt MBJS")
-    st.caption("AI Health Command Center")
-    
-    # 메뉴 선택 (3개로 확장)
-    page = st.radio("메뉴 이동", [
-        "🏠 Daily Dashboard", 
-        "🏎️ The Pit Wall", 
-        "📂 Log Archive"
-    ])
-    
-    st.divider()
-    st.markdown("### ℹ️ User Profile")
-    st.caption("Target Weight: **83.0kg**")
-    st.caption("Focus: **Tennis / Zone 2**")
+# 메인 탭 생성
+tab1, tab2, tab3 = st.tabs(["📊 대시보드", "📝 기록하기", "🏎️ Pit Wall"])
 
 # =========================================================
-# [PAGE 1] 🏠 Daily Dashboard
+# [TAB 1] Dashboard
 # =========================================================
-if page == "🏠 Daily Dashboard":
-    st.markdown("## 🏠 Daily Dashboard")
-
-    tab1, tab2 = st.tabs(["🌞 Morning Check-in (진단)", "📝 Daily Action Log (실행)"])
-
-    # --- [Tab 1] 진단 대시보드 ---
-    with tab1:
-        st.markdown("### 📡 Real-time Bio-Dashboard")
-        try:
-            sheet_health = get_db_connection("Health_Log")
-            sheet_action = get_db_connection("Action_Log")
+with tab1:
+    st.markdown("### 📡 Real-time Bio-Dashboard")
+    
+    try:
+        # ... (DB 연결 코드는 동일) ...
+        sheet_health = get_db_connection("Health_Log")
+        sheet_action = get_db_connection("Action_Log")
+        
+        health_data = sheet_health.get_all_records()
+        action_data = sheet_action.get_all_records()
+        
+        df_health = pd.DataFrame(health_data)
+        df_action = pd.DataFrame(action_data)
+        
+        if not df_health.empty:
+            # -------------------------------------------------------
+            # [시간 보정: 스마트 함수 사용]
+            # -------------------------------------------------------
+            now_kst = get_current_kst() # <--- 이걸로 통일!
+            today_mission_key = get_mission_date_key()
             
-            health_data = sheet_health.get_all_records()
-            action_data = sheet_action.get_all_records()
+            # 1. 캘린더 & 날짜 키
+            calendar_events = get_today_calendar_events()
             
-            df = pd.DataFrame(health_data)
-            df_act = pd.DataFrame(action_data)
+            # 2. 오늘 활동
+            today_str = now_kst.strftime('%Y-%m-%d') 
+            today_logs = df_action[df_action['Date'] == today_str]
+            today_activities = []
+            for _, row in today_logs.iterrows():
+                today_activities.append(f"[{row['Action_Time']}] {row['Category']}: {row['User_Input']}")
             
-            if not df.empty:
-                df['Date_Obj'] = pd.to_datetime(df['Date'], errors='coerce')
-                df['Day_Str'] = df['Date_Obj'].dt.strftime("%m-%d")
-                for c in ['HRV', 'RHR', 'Weight']: df[c] = pd.to_numeric(df[c], errors='coerce')
-
-                # Worst Case Logic
-                df_daily = df.groupby('Day_Str').agg({
-                    'HRV': 'min', 'RHR': 'max', 'Weight': 'max', 'Date_Obj': 'max'
-                }).reset_index().sort_values('Date_Obj')
-                
-                df_recent = df_daily.tail(7) 
-                last_row = df.iloc[-1] 
-                prev_row = df_daily.iloc[-2] if len(df_daily) > 1 else last_row
-
-                st.caption(f"🕒 마지막 업데이트: {last_row.get('Date', 'Unknown')}")
-
-                # Action Log 요약
-                recent_actions = []
-                if not df_act.empty:
-                    target_dates = [datetime.now().strftime("%Y-%m-%d"), (datetime.now() - pd.Timedelta(days=1)).strftime("%Y-%m-%d")]
-                    recent_acts = df_act[df_act['Date'].isin(target_dates)]
-                    for _, row in recent_acts.iterrows():
-                        recent_actions.append(f"[{row['Date']} {row['Category']}] {row['User_Input']}")
-                action_summary = "\n".join(recent_actions) if recent_actions else "최근 기록된 활동 없음."
-
-                # 기능 함수들
-                def make_sparkline(data, y_col, color_hex):
-                    return alt.Chart(data).mark_line(point=True, strokeWidth=3).encode(
-                        x=alt.X('Day_Str', title=None, axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y(y_col, title=None, scale=alt.Scale(zero=False)),
-                        color=alt.value(color_hex), tooltip=['Day_Str', y_col]
-                    ).properties(height=100)
-
-                def get_traffic_signal(val, type):
-                    if type == 'HRV': return "🔴 Achtung!" if val < 30 else "🟡 Caution" if val < 45 else "🟢 Keep it up!"
-                    elif type == 'RHR': return "🔴 Achtung!" if val > 75 else "🟡 Caution" if val > 65 else "🟢 Keep it up!"
-                    elif type == 'Score': 
-                        if val < 60: return "🔴 F (낙제)"
-                        elif val < 70: return "🔴 D (위험)"
-                        else: return "🟢 Keep it up!"
-                    return ""
-                
-                def get_status_color(signal_text):
-                    if "🔴" in signal_text: return "#FF4B4B"
-                    elif "🟡" in signal_text: return "#FFA726"
-                    return "#2ECC71"
-
-                # -----------------------------------------------------------
-                # [점수 및 변수 계산] (변수명 복구 완료)
-                # -----------------------------------------------------------
-                try: hrv_curr = int(last_row.get('HRV', 0))
-                except: hrv_curr = 0
-                hrv_signal = get_traffic_signal(hrv_curr, 'HRV')
-                hrv_color = get_status_color(hrv_signal)
-
-                try: rhr_curr = int(last_row.get('RHR', 0))
-                except: rhr_curr = 0
-                rhr_signal = get_traffic_signal(rhr_curr, 'RHR')
-                rhr_color = get_status_color(rhr_signal)
-
-                TARGET_WEIGHT = 83.0
-                try:
-                    w_curr = float(last_row.get('Weight', 0))
-                    w_prev = float(prev_row['Weight']) if prev_row['Weight'] > 0 else w_curr
-                    if w_curr > 0:
-                        gap = abs(w_curr - TARGET_WEIGHT)
-                        base_score = 100 - (gap * 6)
-                        trend_score = 3 if w_curr < w_prev else -3 if w_curr > w_prev else -1
-                        final_score = int(min(100, max(0, base_score + trend_score)))
-                    else: final_score, w_curr = 0, 0.0
-                except: final_score, w_curr = 0, 0.0
-                score_signal = get_traffic_signal(final_score, 'Score')
-                score_color = get_status_color(score_signal)
-
-                # -----------------------------------------------------------
-                # [UI 출력] 3단 대시보드
-                # -----------------------------------------------------------
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns(3)
-                    with c1:
-                        st.metric("HRV (회복탄력성)", f"{hrv_curr} ms")
-                        st.caption(f"**{hrv_signal}** (3040평균: 40ms)")
-                        if not df_recent.empty: st.altair_chart(make_sparkline(df_recent, 'HRV', hrv_color), use_container_width=True)
-                    with c2:
-                        st.metric("RHR (안정시심박)", f"{rhr_curr} bpm")
-                        st.caption(f"**{rhr_signal}** (3040평균: 65bpm)")
-                        if not df_recent.empty: st.altair_chart(make_sparkline(df_recent, 'RHR', rhr_color), use_container_width=True)
-                    with c3:
-                        st.metric("체중 관리 지수", f"{final_score} 점")
-                        st.caption(f"**{score_signal}** (Target: {TARGET_WEIGHT}kg)")
-                        if not df_recent.empty: st.altair_chart(make_sparkline(df_recent, 'Weight', score_color), use_container_width=True)
-                
-                st.info(f"⚖️ **현재 체중: {w_curr}kg** (목표까지 {round(w_curr - TARGET_WEIGHT, 1)}kg 남음)")
-
-                # ===========================================================
-                # 🩺 닥터 MBJS의 즉시 분석 (상세 로직 복구 완료)
-                # ===========================================================
-                st.divider()
-                st.markdown("### 🩺 닥터 MBJS의 종합 진단")
-
-                # [1] 상태 진단 로직
-                if "Achtung" in hrv_signal or "Achtung" in rhr_signal:
-                    condition_status = "RED"
-                    summary_title = "🚨 [경고] 신체 기능 저하 감지"
-                elif "Caution" in hrv_signal or "Caution" in rhr_signal:
-                    condition_status = "YELLOW"
-                    summary_title = "🟡 [주의] 컨디션 조절 필요"
-                else:
-                    condition_status = "GREEN"
-                    summary_title = "🟢 [최상] 훈련 준비 완료"
-
-                # [2] 텍스트 생성 로직
-                # 1) 지표 해석
-                interpret_texts = []
-                if hrv_curr < 40:
-                    interpret_texts.append(f"• **HRV({hrv_curr}ms):** 3040 남성 평균(40ms)보다 낮습니다. 자율신경계가 억눌려 있습니다.")
-                else:
-                    interpret_texts.append(f"• **HRV({hrv_curr}ms):** 평균 이상으로 회복 탄력성이 아주 좋습니다.")
-                
-                if rhr_curr > 65:
-                    interpret_texts.append(f"• **RHR({rhr_curr}bpm):** 심장이 평소보다 빠르게 뛰고 있습니다(평균 65bpm 초과). 엔진이 과열된 상태입니다.")
-                else:
-                    interpret_texts.append(f"• **RHR({rhr_curr}bpm):** 심박수가 아주 안정적입니다.")
-                    
-                if w_curr > w_prev:
-                    interpret_texts.append(f"• **체중:** 어제보다 **{round(w_curr - w_prev, 1)}kg 증가**하여 점수가 깎였습니다.")
-                elif w_curr < w_prev:
-                    interpret_texts.append(f"• **체중:** 어제보다 **{round(w_prev - w_curr, 1)}kg 감소**하는 긍정적 추세입니다.")
-
-                # [🆕 추가] AI 기반 원인 분석 실행
-                recent_summary = summarize_recent_actions(df_act, days=3)
-                ai_cause = ai_analyze_cause(hrv_curr, rhr_curr, w_curr, recent_summary)
-
-                # 2) 원인 분석
-                cause_texts = []
-
-                # [🆕] AI 분석 결과 우선 표시
-                cause_texts.append(f"• **핵심 원인:** {ai_cause['primary']}")
-
-                # [🆕] 세부 근거 추가
-                if ai_cause['details']:
-                    for detail in ai_cause['details']:
-                        cause_texts.append(f"• {detail}")
-                
-                if w_curr > w_prev:
-                    cause_texts.append("• **체중 증가 원인:** 어제 섭취한 국물(염분)이나 야식으로 인한 수분 저류(붓기) 가능성이 높습니다.")
-
-                # 3) 오늘의 액션 플랜
-                # [🆕] 캘린더 일정 가져오기
-                calendar_events = get_today_calendar_events()
-
-                # [🆕] AI가 캘린더 고려해서 액션 플랜 생성
-                ai_plan = ai_generate_action_plan(
-                    condition_status, 
-                    hrv_curr, 
-                    rhr_curr, 
-                    w_curr, 
-                    recent_summary,
-                    calendar_events
-                )
-
-                # [🆕] AI 생성 플랜을 리스트로 변환
-                action_plans = [
-                    f"💪 **운동:** {ai_plan.get('workout', '데이터 부족')}",
-                    f"🥗 **식단:** {ai_plan.get('diet', '데이터 부족')}",
-                    f"🔋 **회복:** {ai_plan.get('recovery', '데이터 부족')}"
-                ]
-
-                # [3] 화면 출력
-                st.markdown(f"#### {summary_title}")
-                with st.container(border=True):
-                    st.markdown(f"##### 1️⃣ 지표 해석")
-                    for t in interpret_texts: st.markdown(t)
-                    st.markdown("---")
-                    st.markdown(f"##### 2️⃣ 원인 분석 (최근 3일 데이터 기반)")
-                    for t in cause_texts: 
-                        st.markdown(t)
-
-                    # [🆕] 확신도 표시
-                    conf = ai_cause.get('confidence', 'low')
-                    if conf == 'high':
-                        st.info("📊 확신도: ⬛⬛⬛⬛⬜ (80%+) - 명확한 원인 확인")
-                    elif conf == 'medium':
-                        st.info("📊 확신도: ⬛⬛⬛⬜⬜ (50-80%) - 추정 가능")
-                    else:
-                        st.warning("📊 확신도: ⬛⬛⬜⬜⬜ (<50%) - 추가 데이터 필요")
-                    st.markdown("---")
-                    st.markdown(f"##### 3️⃣ 오늘의 액션 플랜")
-                    for t in action_plans: st.markdown(t)
-
-                # [수정됨] 상세 가이드 전체 복구
-                st.write("")
-                st.write("")
-                with st.expander("ℹ️ [일러두기] 지표 해석 가이드 & 결정 변수"):
-                    st.markdown("""
-                    **1. HRV (심박 변이도 / Heart Rate Variability)**
-                    * **정의:** 심장 박동 사이의 시간 간격이 얼마나 불규칙한가를 나타냅니다. (규칙적일수록 나쁨, 불규칙할수록 좋음)
-                    * **의미:** 자율신경계(교감/부교감)의 균형 상태. 수치가 **높을수록(High)** 회복이 잘 된 상태입니다.
-                    * **결정 변수 (Variables):** 
-                        * 📉 **감소 요인:** 수면 부족, 음주(가장 큼), 늦은 식사, 정신적 스트레스, 오버트레이닝.
-                        * 📈 **증가 요인:** 양질의 수면, 명상, 냉수욕, 규칙적인 유산소 운동.
-
-                    **2. RHR (안정시 심박수 / Resting Heart Rate)**
-                    * **정의:** 완전히 휴식하고 있을 때(보통 기상 직후) 1분당 심장 박동 수입니다.
-                    * **의미:** 심폐 기능의 효율성. 엔진의 공회전 속도와 같습니다. 수치가 **낮을수록(Low)** 심장이 튼튼하다는 뜻입니다.
-                    * **결정 변수 (Variables):**
-                        * 📈 **증가 요인(나쁨):** 탈수, 염증/감기, 체온 상승, 전날 과식, 알코올, 카페인.
-                        * 📉 **감소 요인(좋음):** 꾸준한 지구력 훈련(Zone 2), 체중 감량.
-
-                    **3. 체중 관리 지수 (Weight Score)**
-                    * **정의:** 목표 체중(83kg) 도달률과 최근 체중 변화 추세를 종합한 자체 점수입니다. (100점 만점)
-                    * **결정 변수 (Variables):** 
-                        * **목표 거리:** 83kg에서 멀어질수록 감점.
-                        * **추세 보너스:** 어제보다 감량했으면 가산점(+), 증량했으면 벌점(-).
-                    """)
-
-            else: st.warning("데이터가 없습니다.")
-        except Exception as e: st.error(f"오류: {e}")
-
-    # --- [Tab 2] Action Log ---
-    with tab2:
-        st.markdown("### 📝 섭취 및 운동 기록")
-        try:
-            sheet_action = get_db_connection("Action_Log")
-            df = pd.DataFrame(sheet_action.get_all_records())
+            # 3. 실시간 최신 데이터
+            latest_row = df_health.iloc[-1]
+            hrv_curr = round(float(latest_row.get('HRV', 0)), 2)
+            rhr_curr = round(float(latest_row.get('RHR', 0)), 2)
+            w_curr = round(float(latest_row.get('Weight', 0)), 2)
+            
+            # 4. 아침 데이터 찾기
+            df_health['Date_Clean'] = pd.to_datetime(df_health['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
+            today_health_logs = df_health[df_health['Date_Clean'] == today_mission_key]
+            
+            # (1) 상단 메트릭
+            st.caption(f"🕒 마지막 업데이트: {latest_row.get('Date', 'Unknown')}")
+            mission = calculate_mission_status(w_curr)
+            
+            def get_signal(val, type):
+                if type == 'HRV': return "🟢" if val >= 45 else "🟡" if val >= 30 else "🔴"
+                elif type == 'RHR': return "🟢" if val <= 65 else "🟡" if val <= 75 else "🔴"
+                return "🟢"
             
             with st.container(border=True):
-                if not df.empty:
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    today_df = df[df['Date'] == today_str]
-                    total_cal = sum([json.loads(x).get('calories',0) for x in today_df[today_df['Category'].str.contains("섭취")]['AI_Analysis_JSON']])
-                    total_workout = sum([json.loads(x).get('time',0) for x in today_df[today_df['Category'].str.contains("운동")]['AI_Analysis_JSON']])
-                    last_act = df.iloc[-1]['Category']
-                else: total_cal, total_workout, last_act = 0, 0, "-"
-                
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Calories", f"{total_cal} kcal", f"{2000-total_cal} left")
-                c2.metric("Workout", f"{total_workout} min", "Target: 60m")
-                c3.metric("Last Action", last_act)
-        except: pass
-
-        st.write("")
-        with st.container(border=True):
-            with st.form("log_form", clear_on_submit=True):
-                c1, c2, c3, c4, c5 = st.columns([1.2, 0.1, 0.8, 0.8, 1.5]) 
-                with c1: log_date = st.date_input("d", datetime.now(), label_visibility="collapsed")
-                with c3: hour = st.selectbox("h", range(24), index=datetime.now().hour, label_visibility="collapsed")
-                with c4: minute = st.selectbox("m", list(range(0, 60, 5)), label_visibility="collapsed")
-                with c5: category = st.selectbox("c", ["🍽️ 섭취", "💪 운동", "🎸 기타"], label_visibility="collapsed")
+                with c1:
+                    st.metric("HRV", f"{hrv_curr} ms")
+                    st.caption(f"{get_signal(hrv_curr, 'HRV')} (평균: 40ms)")
+                with c2:
+                    st.metric("RHR", f"{rhr_curr} bpm")
+                    st.caption(f"{get_signal(rhr_curr, 'RHR')} (평균: 65bpm)")
+                with c3:
+                    st.metric("체중", f"{w_curr} kg")
+                    if mission['active']:
+                        st.caption(f"목표까지 {w_curr - mission['target_weight']:.1f}kg")
+            
+            st.divider()
+            
+            # (2) Daily Check-in (수동 캐싱)
+            st.markdown("### ☀️ Daily Check-in")
+            
+            if not today_health_logs.empty:
+                morning_row = today_health_logs.iloc[0]
                 
-                c_in, c_btn = st.columns([4, 1])
-                with c_in: user_text = st.text_input("input", placeholder="예: 국밥 1그릇 / 벤치마크 러닝", label_visibility="collapsed")
-                with c_btn: submitted = st.form_submit_button("🚀 전송", use_container_width=True)
+                w_morning = round(float(morning_row['Weight']), 1)
+                hrv_morning = round(float(morning_row['HRV']), 1)
+                rhr_morning = round(float(morning_row['RHR']), 1)
+                
+                morning_context_fixed = prepare_full_context(
+                    df_health, df_action, w_morning, is_morning_fixed=True
+                )
+                
+                cal_txt_list = []
+                sports_events = sorted(calendar_events.get("Sports", []), key=lambda x: x['time'])
+                termin_events = sorted(calendar_events.get("Termin", []), key=lambda x: x['time'])
+                
+                for evt in sports_events:
+                    cal_txt_list.append(f"[운동] {evt['time']} {evt['title']}")
+                for evt in termin_events:
+                    cal_txt_list.append(f"[일정] {evt['time']} {evt['title']}")
+                
+                calendar_str_fixed = "\n".join(cal_txt_list) if cal_txt_list else "일정 없음"
 
-                if submitted and user_text:
-                    with st.spinner("AI 분석 중... (Pure AI Mode)"):
-                        try:
-                            log_time = f"{hour:02d}:{minute:02d}"
-                            ai_res = ai_parse_log(category, user_text, log_time, "")
-                            
-                            sheet_action.append_row([log_date.strftime("%Y-%m-%d"), log_time, category, user_text, json.dumps(ai_res, ensure_ascii=False), ""])
-                            st.toast("✅ 저장 완료!")
-                            
-                            if "운동" in category and ai_res.get('cadence'):
-                                st.success(f"🏎️ 텔레메트리 데이터 감지! (RPM: {ai_res.get('cadence')})")
+                cache_key = today_mission_key
+                checkin_result = load_checkin_cache(cache_key)
+                
+                if checkin_result is None:
+                    with st.spinner("🤖 Dr. MBJS가 오늘의 전략을 분석 중..."):
+                        checkin_result = ai_generate_daily_checkin(
+                            today_mission_key, hrv_morning, rhr_morning, w_morning,
+                            morning_context_fixed, calendar_str_fixed
+                        )
+                        if save_checkin_cache(cache_key, checkin_result):
+                            st.success("✅ 오늘의 전략을 생성하고 저장했습니다.", icon="💾")
+                        clear_old_caches(keep_days=7)
+                else:
+                    st.info("📋 저장된 오늘의 전략을 불러왔습니다.", icon="♻️")
+                
+                with st.container(border=True):
+                    signal = checkin_result.get('condition_signal', 'Yellow')
+                    title = checkin_result.get('condition_title', '분석 중...')
+                    
+                    if signal == 'Green': icon = "🟢"
+                    elif signal == 'Red': icon = "🔴"
+                    else: icon = "🟡"
+                    
+                    st.subheader(f"{icon} {title}")
+                    st.markdown(f"**🕵️ 분석:** {checkin_result.get('analysis', '데이터 부족')}")
+                    st.divider()
+                    st.markdown("**🎯 오늘의 전략 (Schedule-Based)**")
+                    
+                    c_m1, c_m2, c_m3 = st.columns(3)
+                    with c_m1: st.info(f"**💪 운동**\n\n{checkin_result.get('mission_workout')}")
+                    with c_m2: st.success(f"**🥗 식단**\n\n{checkin_result.get('mission_diet')}")
+                    with c_m3: st.warning(f"**🔋 회복**\n\n{checkin_result.get('mission_recovery')}")
+            else:
+                st.info(f"💤 아직 오늘의 헬스 데이터가 도착하지 않았습니다. (기준: {today_mission_key} 05:00~)")
+            
+            # (3) Action Plan
+            realtime_context = prepare_full_context(df_health, df_action, w_curr, is_morning_fixed=False)
+            
+            calendar_summary = "일정 없음"
+            if calendar_events['Sports'] or calendar_events['Termin']:
+                calendar_summary = str(calendar_events)
+            
+            combined_activities = today_activities + [f"[CALENDAR] {calendar_summary}"]
+            
+            action_plan = ai_generate_action_plan(
+                hrv_curr, rhr_curr, w_curr, 
+                realtime_context, 
+                combined_activities
+            )
+            
+            st.write("")
+            st.markdown(f"### ⚡ Action Plan ({now_kst.strftime('%H:%M')} 기준)")
+            
+            with st.container(border=True):
+                 st.markdown(f"**📊 현재 상황:** {action_plan.get('current_analysis', '분석 중...')}")
+                 
+                 # [수정] 줄바꿈 강제 적용 로직 추가
+                 raw_actions = action_plan.get('next_actions', '대기 중...')
+                 # 마크다운은 \n 하나는 무시하므로, \n을 \n\n(두 줄 띄기)로 강제 치환
+                 formatted_actions = raw_actions.replace('\n', '\n\n')
+                 
+                 st.markdown(f"**🚀 실질적 조언:**\n{formatted_actions}")
+                 
+                 if action_plan.get('warnings'): st.error(f"⚠️ **경고:** {action_plan['warnings']}")
+        
+        else:
+            st.warning("Health_Log 데이터가 없습니다.")
+    
+    except Exception as e:
+        st.error(f"오류 발생: {e}")
+
+
+# =========================================================
+# [TAB 2] 기록하기
+# =========================================================
+with tab2:
+    # 1. 미션 진행도 카드 (사이드바에서 이사 옴)
+    current_weight = 0.0
+    try:
+        active_mission = get_active_mission()
+        if active_mission:
+            sheet_health = get_db_connection("Health_Log")
+            health_data = sheet_health.get_all_records()
+            if health_data:
+                current_weight = float(health_data[-1]['Weight'])
+            else:
+                current_weight = active_mission['start_weight']
+        else:
+            current_weight = 90.4 
+    except:
+        current_weight = 90.4
+
+    mission_status = calculate_mission_status(current_weight)
+    
+    with st.container(border=True):
+        if mission_status['active']:
+            st.success(f"🎯 {mission_status['name']} (D-{mission_status['days_remaining']})")
+            
+            # 시간 경과
+            st.caption(f"⏳ 시간 경과: {mission_status['progress_pct']:.1f}%")
+            st.progress(mission_status['progress_pct'] / 100)
+            
+            # 감량 진행
+            loss_amount = mission_status['actual_loss']
+            if loss_amount >= 0:
+                st.caption(f"📉 감량 진행: {mission_status['weight_progress_pct']:.1f}%")
+                st.progress(mission_status['weight_progress_pct'] / 100)
+                st.caption(f"👏 현재 {loss_amount:.1f}kg 감량 / 목표 {mission_status['target_loss']:.1f}kg")
+            else:
+                gain_amount = abs(loss_amount)
+                st.caption(f"🚨 **경고: 체중 증가!**")
+                st.progress(0)
+                st.markdown(f":red[**⚠️ 현재 {gain_amount:.1f}kg 증량**] / 목표 {mission_status['target_loss']:.1f}kg 감량")
+        else:
+            st.info("진행 중인 미션이 없습니다")
+    
+    st.divider()
+
+    # 2. 섭취 및 운동 기록
+    st.markdown("### 📝 섭취 및 운동 기록")
+    
+    try:
+        mission = get_active_mission()
+        sheet_action = get_db_connection("Action_Log")
+        df = pd.DataFrame(sheet_action.get_all_records())
+        
+        with st.container(border=True):
+            if not df.empty:
+                today_str = datetime.now().strftime("%Y-%m-%d") # KST 고려 안해도 됨 (기록용이니까)
+                today_df = df[df['Date'] == today_str]
+                
+                total_cal = 0
+                total_workout = 0
+                
+                for _, row in today_df.iterrows():
+                    try:
+                        js = json.loads(row['AI_Analysis_JSON'])
+                        if '섭취' in row['Category']:
+                            total_cal += js.get('calories', 0)
+                        elif '운동' in row['Category']:
+                            total_workout += js.get('time', 0)
+                    except:
+                        continue
+            else:
+                total_cal, total_workout = 0, 0
+            
+            c1, c2, c3 = st.columns(3)
+            
+            if mission:
+                c1.metric("섭취 칼로리", f"{total_cal} kcal", f"{mission['daily_calories'] - total_cal}")
+            else:
+                c1.metric("섭취 칼로리", f"{total_cal} kcal")
+            
+            c2.metric("운동 시간", f"{total_workout} 분")
+            
+            if mission:
+                rules = get_mission_rules(mission['mission_id'])
+                if 'alcohol_ban' in rules:
+                    ban_month = rules['alcohol_ban'].get('month')
+                    if datetime.now().month == ban_month:
+                        c3.metric("Dry Feb", f"{datetime.now().day}/28일")
+    except:
+        pass
+    
+    st.write("")
+    
+    with st.container(border=True):
+        with st.form("log_form", clear_on_submit=True):
+            col1, col2, col3, col4 = st.columns([1.5, 0.6, 0.6, 2])
+            with col1:
+                log_date = st.date_input("날짜", datetime.now(), label_visibility="collapsed")
+            with col2:
+                hour = st.selectbox("시", range(24), index=datetime.now().hour, label_visibility="collapsed")
+            with col3:
+                minute = st.selectbox("분", list(range(0, 60, 5)), label_visibility="collapsed")
+            with col4:
+                category = st.selectbox(
+                    "카테고리",
+                    ["섭취", "운동", "음주", "영양제", "회복", "노트", "기타"],
+                    label_visibility="collapsed"
+                )
+            
+            user_text = st.text_input(
+                "내용",
+                placeholder="예: 국밥 / 테니스 60분 / 사우나 2사이클",
+                label_visibility="collapsed"
+            )
+            
+            col_btn1, col_btn2 = st.columns([4, 1])
+            with col_btn2:
+                submitted = st.form_submit_button("🚀 저장", use_container_width=True)
+            
+            if submitted and user_text:
+                mission = get_active_mission()
+                if mission:
+                    violations = validate_mission_rules(mission['mission_id'], category, user_text)
+                    if violations:
+                        for v in violations:
+                            if v['severity'] == 'error':
+                                st.error(v['message'])
+                                st.stop()
                             else:
-                                st.info(f"📊 {ai_res.get('summary', '기록 완료')}")
-                        except Exception as e: st.error(f"에러: {e}")
+                                st.warning(v['message'])
+                
+                with st.spinner("AI 분석 중..."):
+                    try:
+                        log_time = f"{hour:02d}:{minute:02d}"
+                        ai_res = ai_parse_log(category, user_text, log_time, "")
+                        
+                        sheet_action = get_db_connection("Action_Log")
+                        sheet_action.append_row([
+                            log_date.strftime("%Y-%m-%d"),
+                            log_time,
+                            category,
+                            user_text,
+                            json.dumps(ai_res, ensure_ascii=False),
+                            ""
+                        ])
+                        
+                        st.success("✅ 저장 완료!")
+                        st.info(f"📊 {ai_res.get('summary', '기록 완료')}")
+                        st.cache_data.clear()
+                    
+                    except Exception as e:
+                        st.error(f"에러: {e}")
+
+    st.divider()
+
+    # 3. 데이터 아카이브 (Expander)
+    with st.expander("📂 데이터 아카이브", expanded=False):
+        try:
+            sheet = get_db_connection("Action_Log")
+            data = sheet.get_all_records()
+            df = pd.DataFrame(data)
+            
+            if not df.empty:
+                reversed_df = df.iloc[::-1]
+                
+                cat_filter = st.multiselect("카테고리 필터", reversed_df['Category'].unique())
+                if cat_filter:
+                    display_df = reversed_df[reversed_df['Category'].isin(cat_filter)]
+                else:
+                    display_df = reversed_df
+                
+                st.dataframe(
+                    display_df[['Date', 'Action_Time', 'Category', 'User_Input']],
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("데이터 없음")
+        except Exception as e:
+            st.error(f"오류: {e}")
+
 
 # =========================================================
-# [PAGE 2] 🏎️ The Pit Wall
+# [TAB 3] Pit Wall
 # =========================================================
-elif page == "🏎️ The Pit Wall": 
+with tab3:
     st.markdown("## 🏎️ The Pit Wall")
-    st.caption("Telemetry Analysis Center: 고정 부하(Dyno Test) 환경에서의 신체 엔진 효율성 정밀 분석")
-
+    st.caption("Performance Telemetry Center")
+    
     try:
         sheet_action = get_db_connection("Action_Log")
         data = sheet_action.get_all_records()
         df = pd.DataFrame(data)
-
-        # 벤치마크 데이터(Telemetry) 추출
+        
         bench_data = []
         if not df.empty:
             workout_df = df[df['Category'].str.contains("운동")]
@@ -770,63 +1046,15 @@ elif page == "🏎️ The Pit Wall":
                     if js.get('cadence') or "벤치마크" in str(row['User_Input']):
                         bench_data.append({
                             'Date': row['Date'],
-                            'Cadence': js.get('cadence', 0),
-                            'Oscillation': js.get('vertical_osc', 0),
-                            'GCT': js.get('gct', 0),
                             'Avg_BPM': js.get('avg_bpm', 0)
                         })
-                except: continue
+                except:
+                    continue
         
         if bench_data:
-            df_bench = pd.DataFrame(bench_data)
-            df_bench['Date'] = pd.to_datetime(df_bench['Date'])
-            df_bench = df_bench.sort_values('Date')
-
-            last_run = df_bench.iloc[-1]
-            efficiency_score = int((last_run['Cadence'] / last_run['Avg_BPM']) * 100) if last_run['Avg_BPM'] > 0 else 0
-            
-            with st.container(border=True):
-                c1, c2 = st.columns([1, 3])
-                with c1: st.metric("⚙️ Body Efficiency", f"{efficiency_score} Pts", "MBJS Index")
-                with c2: st.info(f"🏁 **Last Lap Data:** {last_run['Date'].strftime('%Y-%m-%d')} | 엔진부하 {last_run['Avg_BPM']}bpm | 구동 RPM {last_run['Cadence']}")
-
-            st.write("")
-            st.markdown("#### 📟 Telemetry Data Monitor")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**📉 Engine Load (Heart Rate)**") 
-                st.altair_chart(alt.Chart(df_bench).mark_line(point=True, color='red').encode(x='Date', y=alt.Y('Avg_BPM', scale=alt.Scale(zero=False))).properties(height=200), use_container_width=True)
-                st.markdown("**📈 Engine RPM (Cadence)**") 
-                st.altair_chart(alt.Chart(df_bench).mark_line(point=True, color='purple').encode(x='Date', y=alt.Y('Cadence', scale=alt.Scale(zero=False))).properties(height=200), use_container_width=True)
-            with c2:
-                st.markdown("**📉 Suspension Loss (Vertical Osc.)**") 
-                st.altair_chart(alt.Chart(df_bench).mark_line(point=True, color='orange').encode(x='Date', y=alt.Y('Oscillation', scale=alt.Scale(zero=False))).properties(height=200), use_container_width=True)
-                st.markdown("**📉 Traction Time (GCT)**") 
-                st.altair_chart(alt.Chart(df_bench).mark_line(point=True, color='green').encode(x='Date', y=alt.Y('GCT', scale=alt.Scale(zero=False))).properties(height=200), use_container_width=True)
+            st.info(f"📊 벤치마크 데이터 {len(bench_data)}개 발견")
         else:
-            st.info("📡 No Telemetry Data found. (Please initiate a Benchmark Run)")
-
-    except Exception as e: st.error(f"System Error: {e}")
-
-# =========================================================
-# [PAGE 3] 📂 Log Archive
-# =========================================================
-elif page == "📂 Log Archive":
-    st.markdown("# 🗂️ Log Archive")
-    try:
-        sheet = get_db_connection("Action_Log") 
-        data = sheet.get_all_records()
-        df = pd.DataFrame(data)
-
-        if not df.empty:
-            reversed_df = df.iloc[::-1]
-            with st.container(border=True):
-                cat_filter = st.multiselect("🔍 카테고리 필터", reversed_df['Category'].unique())
-                if cat_filter: display_df = reversed_df[reversed_df['Category'].isin(cat_filter)]
-                else: display_df = reversed_df
-                st.dataframe(display_df[['Date', 'Action_Time', 'Category', 'User_Input']], use_container_width=True, hide_index=True)
-                csv = display_df.to_csv(index=False).encode('utf-8')
-                st.download_button("💾 CSV 다운로드", csv, "mbjs_full_log.csv", "text/csv")
-        else:
-            st.info("데이터가 없습니다.")
-    except Exception as e: st.error(f"오류: {e}")
+            st.info("텔레메트리 데이터 없음")
+    
+    except Exception as e:
+        st.error(f"Error: {e}")
