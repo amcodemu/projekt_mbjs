@@ -473,7 +473,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
     
     try:
         response = client.chat.completions.create(
-            model="gpt-4-turbo-preview",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
