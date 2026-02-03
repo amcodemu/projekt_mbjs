@@ -785,14 +785,22 @@ with tab2:
     # ★★★ 입력 폼 ★★★
     with st.container(border=True):
         with st.form("log", clear_on_submit=True):
-            c1, c2, c3, c4 = st.columns([1.3, 0.8, 0.8, 1.1])
-            with c1: d = st.date_input("날짜", now_kst.date(), label_visibility="collapsed")
-            with c2: h = st.selectbox("시", range(24), index=now_kst.hour, label_visibility="collapsed")
-            with c3: m = st.selectbox("분", list(range(0,60,5)), index=(now_kst.minute//5), label_visibility="collapsed")
-            with c4: cat = st.selectbox("카테고리", ["섭취","운동","음주","영양제","회복","노트"], label_visibility="collapsed")
+            # ★★★ 한 줄에 4개 필드 ★★★
+            c1, c2, c3, c4 = st.columns([2, 0.7, 0.7, 1.2])
             
-            txt = st.text_input("내용", placeholder="내용을 입력하세요", label_visibility="collapsed")
+            with c1: 
+                d = st.date_input("", now_kst.date(), label_visibility="collapsed")
+            with c2: 
+                h = st.selectbox("", range(24), index=now_kst.hour, label_visibility="collapsed")
+            with c3: 
+                m = st.selectbox("", list(range(0,60,5)), index=(now_kst.minute//5), label_visibility="collapsed")
+            with c4: 
+                cat = st.selectbox("", ["섭취","운동","음주","영양제","회복","노트"], label_visibility="collapsed")
             
+            # 내용 입력
+            txt = st.text_input("", placeholder="예: 닭가슴살 샐러드", label_visibility="collapsed")
+            
+            # 저장 버튼
             if st.form_submit_button("🚀 저장", use_container_width=True) and txt:
                 with st.spinner("Saving..."):
                     tm = f"{h:02d}:{m:02d}"
@@ -806,8 +814,6 @@ with tab2:
                         ""
                     ])
                     st.success("Saved!")
-                    
-                    # 캐시 클리어
                     st.cache_data.clear()
     
     st.divider()
