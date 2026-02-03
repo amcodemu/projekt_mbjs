@@ -253,8 +253,45 @@ def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=
     recent_logs = df_action[df_action['Date'] >= five_days_ago].copy()
     if is_morning_fixed: recent_logs = recent_logs[recent_logs['Date'] < today_date_key]
     
-    recent_logs_text = "\n".join([f"- [{r['Date']} {r['Action_Time']}] {r['Category']}: {r['User_Input']}" for _, r in recent_logs.sort_values(['Date', 'Action_Time']).iterrows()]) if not recent_logs.empty else "기록 없음"
+    # ★★★ 날짜별로 그룹핑 ★★★
+    if not recent_logs.empty:
+        dates_in_range = pd.date_range(
+            start=five_days_ago, 
+            end=today_date_key, 
+            freq='D'
+        ).strftime('%Y-%m-%d').tolist()
+        
+        logs_by_date = []
+        for date_str in dates_in_range:
+            date_logs = recent_logs[recent_logs['Date'] == date_str]
+            
+            # 날짜 라벨 (며칠 전?)
+            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+            today_obj = datetime.strptime(today_date_key, '%Y-%m-%d')
+            days_ago = (today_obj - date_obj).days
+            
+            if days_ago == 0:
+                date_label = f"━━━ {date_str} (오늘) ━━━"
+            elif days_ago == 1:
+                date_label = f"━━━ {date_str} (어제) ━━━"
+            else:
+                date_label = f"━━━ {date_str} ({days_ago}일 전) ━━━"
+            
+            if date_logs.empty:
+                logs_text = "(기록 없음)"
+            else:
+                logs_text = "\n".join([
+                    f"• [{r['Action_Time']}] {r['Category']}: {r['User_Input']}" 
+                    for _, r in date_logs.sort_values('Action_Time').iterrows()
+                ])
+            
+            logs_by_date.append(f"{date_label}\n{logs_text}")
+        
+        recent_logs_text = "\n\n".join(logs_by_date)
+    else:
+        recent_logs_text = "기록 없음"
 
+    # ★★★ 건강 지표 계산 (30일) ★★★
     cutoff = (datetime.strptime(today_date_key, '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
     df_h_30 = df_health[df_health['Date'] >= cutoff].copy()
     df_a_30 = df_action[df_action['Date'] >= cutoff].copy()
@@ -287,7 +324,12 @@ def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=
     
     return f"""
 [USER] Age:35, Male, Mission:{mission['name']}, Wt:{current_weight}kg
-[LOGS(5d)] {recent_logs_text}
+
+[LOGS (Last 5 Days - BY DATE)]
+{recent_logs_text}
+
+[TODAY: {today_date_key}]
+
 [STATS] HRV:{hrv_avg:.1f}, RHR:{rhr_avg:.1f}, {sleep_info}
 [PATTERNS] {ptn_txt}
 """
@@ -389,46 +431,61 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
     - **Supportive & Affectionate:** You genuinely care about the user. You want them to succeed. After pointing out mistakes, encourage them warmly. (Warm Heart)
     - **Language:** STRICT Korean Honorifics (존댓말, ~해요). ABSOLUTELY NO Banmal.
     
-    [USER PROFILE - ATHLETIC]  
+    [USER PROFILE - '찜머']  
     - User is ATHLETIC and MOTIVATED
     - User tracks: Squat, Deadlift, Core , Balance , Cardio , etc.
 
     [WORKOUT INTENSITY BASED ON BIOMARKERS]  
     Current HRV: {hrv}ms | RHR: {rhr}bpm
 
+    Intensity Guidelines:
+    - HRV > 50 & RHR < 65: ✅ HIGH intensity OK
+      → Heavy weights, HIIT, max effort possible
+      → "스쿼트 80kg 3x8, 데드리프트 100kg 3x5, HIIT 스프린트 8회"
+      
+    - HRV 40-50 OR RHR 65-75: ⚠️ MODERATE only
+      → Normal training, avoid max effort, focus on volume
+      → "스쿼트 70kg 4x10, 레그프레스 100kg 3x12, Zone 2 유산소 30분"
+      
+    - HRV < 40 OR RHR > 75: 🚫 LIGHT recovery only
+      → Active recovery, stretching, mobility work
+      → "가벼운 산책 30분, 폼롤러, 요가"
+
     [WORKOUT DISTRIBUTION RULE]  
-    - Cardio + Core: 70% priority
-    - Upper body: 15%
-    - Lower body: 15%
+    - Cardio + Core: 70% priority (주 5회 중 3-4회)
+    - Upper body: 15% (주 1회)
+    - Lower body: 15% (주 1회)
 
     [WORKOUT SUGGESTIONS - MANDATORY SPECIFICITY]  
     When suggesting workouts, you MUST include:
-    1. Exercise names (Korean or English)
-    2. Weight/sets/reps (if applicable)
-    3. Duration and intensity (for cardio)
-    4. WHY this workout today (based on HRV/RHR/recent activity)
+    1. Exercise names (Korean OK, be specific!)
+    2. Weight/sets/reps OR duration/intensity
+    3. WHY this workout today (HRV/RHR/recent pattern)
 
     ✅ GOOD Example:
-    "오늘은 HRV 52ms로 회복이 양호합니다. 고강도 하체 훈련 가능합니다.
+    "찜머님, 오늘 HRV 52ms로 회복이 양호합니다! 고강도 하체 가능해요.
 
-    19:00 헬스장 운동 계획:
-    - 워밍업: 5분 가볍게 걷기
-    - 스쿼트: 80kg 3세트 x 8reps (무릎 주의)
-    - 레그프레스: 120kg 3세트 x 12reps
-    - 레그컬: 40kg 3세트 x 15reps
-    - 유산소: 런닝머신 Zone 2 (심박 130-140), 30분
-    - 코어: 플랭크 3세트 x 60초
+    🏋️ 19:00 헬스장 운동 계획:
+    • 워밍업: 5분 가볍게 걷기
+    • 스쿼트: 80kg 3세트 x 8reps (무릎 각도 주의)
+    • 레그프레스: 120kg 3세트 x 12reps
+    • 레그컬: 40kg 3세트 x 15reps
+    • 유산소: 런닝머신 Zone 2 (심박 130-140), 30분
+    • 코어: 플랭크 3세트 x 60초
 
-    이유: HRV가 높고 최근 2일 휴식했으므로 오늘 고중량 가능"
+    💡 이유: HRV 높고 최근 2일 휴식 → 오늘 고중량 적기!"
 
-    ❌ BAD Example:
-    "가벼운 스트레칭을 하세요"
-    "운동을 하시면 좋겠습니다"
+    ❌ BAD Example (절대 사용 금지):
+    "가벼운 스트레칭 하세요"
+    "운동 가시면 좋겠어요"
+    "몸 상태 보고 결정하세요"
 
     [MOTIVATION - CREATE URGENCY]  
-    - If user hasn't worked out in 2+ days: "⚠️ 지난 2일 운동 안 함. 오늘 필수!"
-    - If streak exists: "🔥 3일 연속 운동 중! 연속 기록 이어가세요"
-    - If falling behind: "이번 주 목표: 4회 중 1회만 완료. 오늘 가지 않으면 목표 달성 어려움"    
+    Always check recent workout frequency and create urgency:
+    - No workout in 2+ days: "⚠️ 지난 2일 운동 안 함! 오늘 필수예요"
+    - Streak exists: "🔥 3일 연속 운동! 연속 기록 이어가요"
+    - Behind target: "이번 주 목표 4회 중 1회만 완료. 오늘 안 가면 목표 달성 어려워요"
+    - Good pattern: "완벽한 루틴 유지 중! 👏 
     
     {full_context}
 
@@ -678,48 +735,52 @@ with tab2:
     
     st.divider()
     
-    # ★★★ [개선] 오늘 요약 캐싱 ★★★
     st.markdown("### 📊 오늘의 기록")
-    
-    @st.cache_data(ttl=300)
+
+    # ★★★ 캐싱된 함수 ★★★
+    @st.cache_data(ttl=300)  # 5분 캐시
     def get_today_summary(date_str):
+        cal = 0
+        mins = 0
         try:
             sh_a = get_db_connection("Action_Log")
             df_a = pd.DataFrame(sh_a.get_all_records())
-            df_a['Date_Clean'] = pd.to_datetime(df_a['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
-            today_df = df_a[df_a['Date_Clean'] == date_str]
             
-            cal = 0
-            mins = 0
-            for _, r in today_df.iterrows():
-                try:
-                    js = json.loads(r['AI_Analysis_JSON'])
-                    if '섭취' in r['Category']: cal += js.get('calories', 0)
-                    if '운동' in r['Category']: mins += js.get('time', 0)
-                except: pass
-            
-            return {'calories': cal, 'minutes': mins}
-        except:
-            return {'calories': 0, 'minutes': 0}
-    
-    summary = get_today_summary(today_str)
-    
-    with st.container(border=True):
-        sc1, sc2, sc3 = st.columns(3)
-        with sc1: st.metric("섭취 칼로리", f"{summary['calories']} kcal")
-        with sc2: st.metric("운동 시간", f"{summary['minutes']} 분")
+            if not df_a.empty:
+                df_a['Date_Clean'] = pd.to_datetime(df_a['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                today_df = df_a[df_a['Date_Clean'] == date_str]
+                
+                for _, r in today_df.iterrows():
+                    try:
+                        js = json.loads(r['AI_Analysis_JSON'])
+                        if '섭취' in r['Category']: cal += js.get('calories', 0)
+                        if '운동' in r['Category']: mins += js.get('time', 0)
+                    except: pass
+        except: pass
         
-        # Dry Feb
-        with sc3:
-            mission = get_active_mission()
-            if mission:
-                rules = get_mission_rules(mission['mission_id'])
-                if 'alcohol_ban' in rules:
-                    ban_month = rules['alcohol_ban'].get('month')
-                    if now_kst.month == ban_month:
-                        st.metric("Dry Feb", f"{now_kst.day}/28일")
-    
-    st.write("")
+        return {'calories': cal, 'minutes': mins}
+
+    # 캐시된 데이터 가져오기
+    summary = get_today_summary(today_str)
+
+    # ★★★ HTML 스타일링으로 표시 ★★★
+    summary_html = f"""
+    <div style="display: flex; gap: 8px; margin-bottom: 20px;">
+    <div style="flex: 1; background: #FFFFFF; padding: 14px 8px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+    <div style="font-size: 12px; color: #64748B; font-weight: 600; margin-bottom: 6px;">섭취 칼로리</div>
+    <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{summary['calories']} kcal</div>
+    </div>
+    <div style="flex: 1; background: #FFFFFF; padding: 14px 8px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+    <div style="font-size: 12px; color: #64748B; font-weight: 600; margin-bottom: 6px;">운동 시간</div>
+    <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{summary['minutes']} 분</div>
+    </div>
+    <div style="flex: 1; background: #FFFFFF; padding: 14px 8px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+    <div style="font-size: 12px; color: #64748B; font-weight: 600; margin-bottom: 6px;">Dry Feb</div>
+    <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{now_kst.day}/28일</div>
+    </div>
+    </div>
+    """
+    st.markdown(summary_html, unsafe_allow_html=True)
     
     # ★★★ 입력 폼 ★★★
     with st.container(border=True):
@@ -769,7 +830,7 @@ with tab2:
                 )
         except: 
             st.error("로딩 실패")
-            
+
 # [TAB 3] Pit Wall
 with tab3:
     st.markdown("## 🏎️ The Pit Wall")
