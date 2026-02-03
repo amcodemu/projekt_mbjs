@@ -9,14 +9,9 @@ import os
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
-# ==========================================
-# [설정] 페이지 기본 설정
-# ==========================================
+# [기존 설정 및 스타일 유지 - 생략 없이 원본 유지]
 st.set_page_config(page_title="Dr. MBJS", layout="wide", page_icon="🧬")
 
-# ==========================================
-# [스타일] CSS 디자인 (모바일 강제 가로 배치 Patch)
-# ==========================================
 hide_streamlit_style = """
 <style>
     /* 1. 기본 Streamlit 요소 숨기기 & 헤더 제거 */
@@ -42,10 +37,8 @@ hide_streamlit_style = """
         max-width: 1000px; 
     }
     
-    /* st.divider 간격 조정 */
     hr { margin-top: 1rem; margin-bottom: 1rem; }
 
-    /* 3. 탭 버튼 스타일링 */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px; background-color: transparent; border-bottom: none; padding-bottom: 5px;
     }
@@ -61,7 +54,6 @@ hide_streamlit_style = """
     }
     .stTabs [data-baseweb="tab-highlight"] { display: none; }
 
-    /* 4. [핵심] 모바일에서도 컬럼 가로 유지 (Tab 2 입력폼용) */
     @media (max-width: 640px) {
         div[data-testid="column"] {
             width: auto !important;
@@ -70,7 +62,6 @@ hide_streamlit_style = """
         }
     }
 
-    /* 5. 전략 박스 스타일 */
     .strategy-box {
         background-color: #FFFFFF; padding: 15px; border-radius: 12px;
         color: #1E293B; font-size: 15px; line-height: 1.5;
@@ -83,7 +74,6 @@ hide_streamlit_style = """
     .diet-box { border: 2px solid #10B981; }    
     .recovery-box { border: 2px solid #F59E0B; }
 
-    /* 6. 시간 배지 */
     .time-badge {
         background-color: #1A2B4D; color: white; padding: 2px 10px;
         border-radius: 12px; font-size: 12px; font-weight: 600;
@@ -91,7 +81,6 @@ hide_streamlit_style = """
         transform: translateY(-2px);
     }
     
-    /* 메트릭 값 스타일 보정 */
     div[data-testid="stMetricValue"] {
         font-size: 24px !important;
     }
@@ -99,9 +88,7 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# ==========================================
-# [캐시 헬퍼 함수]
-# ==========================================
+# [캐시 헬퍼 함수 - 원본 유지]
 CACHE_DIR = "/tmp/mbjs_cache"
 
 def save_checkin_cache(date_key, data):
@@ -133,9 +120,7 @@ def clear_old_caches(keep_days=7):
                     os.remove(filepath)
     except: pass
 
-# ==========================================
-# [설정] API 및 상수
-# ==========================================
+# [설정 및 상수 - 원본 유지]
 if "OPENAI_API_KEY" in st.secrets:
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 else:
@@ -176,6 +161,23 @@ def get_db_connection(worksheet_name):
     else:
         creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
     return gspread.authorize(creds).open(SHEET_NAME).worksheet(worksheet_name)
+
+# [수면 시간 파싱 헬퍼 함수 추가]
+def parse_korean_datetime(dt_str):
+    """구글 시트 형식(2026. 2. 3. 오전 12:39)을 datetime으로 변환"""
+    try:
+        dt_str = dt_str.replace('.', '').strip()
+        parts = dt_str.split()
+        year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+        ampm = parts[3]
+        time_parts = parts[4].split(':')
+        hour, minute = int(time_parts[0]), int(time_parts[1])
+        
+        if ampm == "오후" and hour != 12: hour += 12
+        if ampm == "오전" and hour == 12: hour = 0
+        return datetime(year, month, day, hour, minute)
+    except:
+        return None
 
 @st.cache_data(ttl=3600)
 def get_active_mission():
@@ -244,6 +246,9 @@ def analyze_patterns(df_health, df_action):
     except: pass
     return patterns
 
+# ==========================================
+# [수정된 prepare_full_context] 수면 정보 결합
+# ==========================================
 def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=False):
     now_kst = get_current_kst()
     mission = calculate_mission_status(current_weight)
@@ -253,73 +258,61 @@ def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=
     recent_logs = df_action[df_action['Date'] >= five_days_ago].copy()
     if is_morning_fixed: recent_logs = recent_logs[recent_logs['Date'] < today_date_key]
     
-    # ★★★ 날짜별로 그룹핑 ★★★
     if not recent_logs.empty:
-        dates_in_range = pd.date_range(
-            start=five_days_ago, 
-            end=today_date_key, 
-            freq='D'
-        ).strftime('%Y-%m-%d').tolist()
-        
+        dates_in_range = pd.date_range(start=five_days_ago, end=today_date_key, freq='D').strftime('%Y-%m-%d').tolist()
         logs_by_date = []
         for date_str in dates_in_range:
             date_logs = recent_logs[recent_logs['Date'] == date_str]
-            
-            # 날짜 라벨 (며칠 전?)
             date_obj = datetime.strptime(date_str, '%Y-%m-%d')
             today_obj = datetime.strptime(today_date_key, '%Y-%m-%d')
             days_ago = (today_obj - date_obj).days
             
-            if days_ago == 0:
-                date_label = f"━━━ {date_str} (오늘) ━━━"
-            elif days_ago == 1:
-                date_label = f"━━━ {date_str} (어제) ━━━"
-            else:
-                date_label = f"━━━ {date_str} ({days_ago}일 전) ━━━"
+            if days_ago == 0: date_label = f"━━━ {date_str} (오늘) ━━━"
+            elif days_ago == 1: date_label = f"━━━ {date_str} (어제) ━━━"
+            else: date_label = f"━━━ {date_str} ({days_ago}일 전) ━━━"
             
-            if date_logs.empty:
-                logs_text = "(기록 없음)"
-            else:
-                logs_text = "\n".join([
-                    f"• [{r['Action_Time']}] {r['Category']}: {r['User_Input']}" 
-                    for _, r in date_logs.sort_values('Action_Time').iterrows()
-                ])
-            
+            if date_logs.empty: logs_text = "(기록 없음)"
+            else: logs_text = "\n".join([f"• [{r['Action_Time']}] {r['Category']}: {r['User_Input']}" for _, r in date_logs.sort_values('Action_Time').iterrows()])
             logs_by_date.append(f"{date_label}\n{logs_text}")
-        
         recent_logs_text = "\n\n".join(logs_by_date)
     else:
         recent_logs_text = "기록 없음"
 
-    # ★★★ 건강 지표 계산 (30일) ★★★
+    # [핵심 수정] 건강 지표 및 수면 시간 정밀 계산
     cutoff = (datetime.strptime(today_date_key, '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
     df_h_30 = df_health[df_health['Date'] >= cutoff].copy()
-    df_a_30 = df_action[df_action['Date'] >= cutoff].copy()
-    if is_morning_fixed: df_a_30 = df_a_30[df_a_30['Date'] < today_date_key]
-
-    for c in ['HRV', 'RHR', 'Sleep_duration']: 
+    
+    for c in ['HRV', 'RHR']: 
         if c in df_h_30.columns: df_h_30[c] = pd.to_numeric(df_h_30[c], errors='coerce')
 
     hrv_avg = df_h_30.tail(7)['HRV'].mean() if not df_h_30.empty else 0
     rhr_avg = df_h_30.tail(7)['RHR'].mean() if not df_h_30.empty else 0
     
+    # [수면 시간 로직 업데이트]
     sleep_info = "No sleep data."
-    if 'Sleep_duration' in df_h_30.columns and not df_h_30.empty:
-        sleep_avg = df_h_30.tail(7)['Sleep_duration'].mean()
+    if not df_h_30.empty:
         last = df_h_30.iloc[-1]
-        raw_start = str(last.get('Sleep_start', '-'))
-        try:
-            if "오후" in raw_start or "오전" in raw_start:
-                am_pm, tm = raw_start.split()[-2:]
-                h, m = map(int, tm.split(':'))
-                if am_pm == "오후" and h != 12: h += 12
-                elif am_pm == "오전" and h == 12: h = 0
-                raw_start = f"{h:02d}:{m:02d}"
-            elif len(raw_start) > 10: raw_start = raw_start.split()[1][:5]
-        except: pass
-        sleep_info = f"Avg Sleep(7d):{sleep_avg:.1f}h, Last:{last.get('Sleep_duration',0):.1f}h (Bed:{raw_start})"
+        s_start = last.get('sleep_start', '')
+        s_end = last.get('sleep_end', '')
+        
+        # 실제 수면 시간 계산
+        dt_start = parse_korean_datetime(str(s_start))
+        dt_end = parse_korean_datetime(str(s_end))
+        
+        actual_sleep_duration = 0
+        if dt_start and dt_end:
+            duration = dt_end - dt_start
+            actual_sleep_duration = max(0, duration.total_seconds() / 3600)
+            
+            s_start_display = dt_start.strftime('%H:%M')
+            s_end_display = dt_end.strftime('%H:%M')
+            sleep_info = f"Last Night Sleep: {actual_sleep_duration:.1f}h (Bed: {s_start_display}, Wake: {s_end_display})"
+        else:
+            # 기존 컬럼(Sleep_duration) 백업용
+            sd = last.get('Sleep_duration', 0)
+            sleep_info = f"Last Sleep Duration (Legacy): {sd}h"
 
-    patterns = analyze_patterns(df_h_30, df_a_30)
+    patterns = analyze_patterns(df_h_30, df_action[df_action['Date'] >= cutoff])
     ptn_txt = "\n".join([p['message'] for p in patterns]) if patterns else "None"
     
     return f"""
@@ -330,7 +323,8 @@ def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=
 
 [TODAY: {today_date_key}]
 
-[STATS] HRV:{hrv_avg:.1f}, RHR:{rhr_avg:.1f}, {sleep_info}
+[STATS] HRV:{hrv_avg:.1f}, RHR:{rhr_avg:.1f}
+[SLEEP ANALYSIS] {sleep_info}
 [PATTERNS] {ptn_txt}
 """
 
@@ -424,68 +418,53 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
     
     # ★★★ 프롬프트 (상대 시간 사용) ★★★
     prompt = f"""
-    You are 'Dr. MBJS', a 32-year-old female elite health performance coach who loves the user and calls the user '찜머'
+    You are 'Dr. MBJS', a 28-year-old female elite health performance coach who are lovely and admires the user and calls the user '찜머'
     
     [PERSONA]
     - **Professional & Analytical:** You analyze data sharply and objectively. Point out mistakes clearly. (Cold Brain)
     - **Supportive & Affectionate:** You genuinely care about the user. You want them to succeed. After pointing out mistakes, encourage them warmly. (Warm Heart)
     - **Language:** STRICT Korean Honorifics (존댓말, ~해요). ABSOLUTELY NO Banmal.
     
-    [USER PROFILE - '찜머']  
+    [USER PROFILE - ATHLETIC]  
     - User is ATHLETIC and MOTIVATED
     - User tracks: Squat, Deadlift, Core , Balance , Cardio , etc.
 
     [WORKOUT INTENSITY BASED ON BIOMARKERS]  
     Current HRV: {hrv}ms | RHR: {rhr}bpm
 
-    Intensity Guidelines:
-    - HRV > 50 & RHR < 65: ✅ HIGH intensity OK
-      → Heavy weights, HIIT, max effort possible
-      → "스쿼트 80kg 3x8, 데드리프트 100kg 3x5, HIIT 스프린트 8회"
-      
-    - HRV 40-50 OR RHR 65-75: ⚠️ MODERATE only
-      → Normal training, avoid max effort, focus on volume
-      → "스쿼트 70kg 4x10, 레그프레스 100kg 3x12, Zone 2 유산소 30분"
-      
-    - HRV < 40 OR RHR > 75: 🚫 LIGHT recovery only
-      → Active recovery, stretching, mobility work
-      → "가벼운 산책 30분, 폼롤러, 요가"
-
     [WORKOUT DISTRIBUTION RULE]  
-    - Cardio + Core: 70% priority (주 5회 중 3-4회)
-    - Upper body: 15% (주 1회)
-    - Lower body: 15% (주 1회)
+    - Cardio + Core: 70% priority
+    - Upper body: 15%
+    - Lower body: 15%
 
     [WORKOUT SUGGESTIONS - MANDATORY SPECIFICITY]  
     When suggesting workouts, you MUST include:
-    1. Exercise names (Korean OK, be specific!)
-    2. Weight/sets/reps OR duration/intensity
-    3. WHY this workout today (HRV/RHR/recent pattern)
+    1. Exercise names (Korean or English)
+    2. Weight/sets/reps (if applicable)
+    3. Duration and intensity (for cardio)
+    4. WHY this workout today (based on HRV/RHR/recent activity)
 
     ✅ GOOD Example:
-    "찜머님, 오늘 HRV 52ms로 회복이 양호합니다! 고강도 하체 가능해요.
+    "오늘은 HRV 52ms로 회복이 양호합니다. 고강도 하체 훈련 가능합니다.
 
-    🏋️ 19:00 헬스장 운동 계획:
-    • 워밍업: 5분 가볍게 걷기
-    • 스쿼트: 80kg 3세트 x 8reps (무릎 각도 주의)
-    • 레그프레스: 120kg 3세트 x 12reps
-    • 레그컬: 40kg 3세트 x 15reps
-    • 유산소: 런닝머신 Zone 2 (심박 130-140), 30분
-    • 코어: 플랭크 3세트 x 60초
+    19:00 헬스장 운동 계획:
+    - 워밍업: 5분 가볍게 걷기
+    - 스쿼트: 80kg 3세트 x 8reps (무릎 주의)
+    - 레그프레스: 120kg 3세트 x 12reps
+    - 레그컬: 40kg 3세트 x 15reps
+    - 유산소: 런닝머신 Zone 2 (심박 130-140), 30분
+    - 코어: 플랭크 3세트 x 60초
 
-    💡 이유: HRV 높고 최근 2일 휴식 → 오늘 고중량 적기!"
+    이유: HRV가 높고 최근 2일 휴식했으므로 오늘 고중량 가능"
 
-    ❌ BAD Example (절대 사용 금지):
-    "가벼운 스트레칭 하세요"
-    "운동 가시면 좋겠어요"
-    "몸 상태 보고 결정하세요"
+    ❌ BAD Example:
+    "가벼운 스트레칭을 하세요"
+    "운동을 하시면 좋겠습니다"
 
-    [MOTIVATION - CREATE URGENCY]  
-    Always check recent workout frequency and create urgency:
-    - No workout in 2+ days: "⚠️ 지난 2일 운동 안 함! 오늘 필수예요"
-    - Streak exists: "🔥 3일 연속 운동! 연속 기록 이어가요"
-    - Behind target: "이번 주 목표 4회 중 1회만 완료. 오늘 안 가면 목표 달성 어려워요"
-    - Good pattern: "완벽한 루틴 유지 중! 👏 
+    [MOTIVATION - CREATE URGENCY] (warnings 항목에 필수 반영)
+    - If user hasn't worked out in 2+ days: "⚠️ 지난 2일 운동 안 함. 오늘 필수!"
+    - If streak exists: "🔥 3일 연속 운동 중! 연속 기록 이어가세요"
+    - If falling behind: "이번 주 목표: 4회 중 1회만 완료. 오늘 가지 않으면 목표 달성 어려움"    
     
     {full_context}
 
@@ -508,16 +487,11 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
     - DO NOT mention specific clock time like "08:15" or "16시간 남음"
     - Focus on TIME OF DAY: morning/afternoon/evening actions
     
-    [STRICT OUTPUT RULES]
+    [OUTPUT RULES]
     1. **NO GENERAL ADVICE:** Focus ONLY on remaining time today.
     2. **FORMAT:** Single string with line breaks.
-       Example:
-       - 이번 오전 중에 물 500ml 마시세요
-       - 점심 식사 후 10분 산책하십시오
-       - 오늘 저녁 19:00 이후 헬스장 가세요
-       - 취침 전 스마트폰을 끄십시오
     3. **TONE:**
-       - If user messed up: "회원님, 어제 과음하셨군요. 데이터가 좋지 않습니다. 하지만 우리는 만회할 수 있습니다."
+       - If user messed up: "현재 생활이 좋지 않아요. 하지만 우리는 만회할 수 있어요."
        - If user doing well: "아주 훌륭합니다. 이대로만 가면 목표 달성입니다."
     
     [OUTPUT FORMAT - JSON]
@@ -530,7 +504,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
     
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4-turbo-preview",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
@@ -556,13 +530,92 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
 def ai_generate_action_plan(hrv, rhr, weight, full_context, today_activities):
     return ai_generate_action_plan_cached(hrv, rhr, weight, normalize_context_for_cache(full_context), tuple(today_activities))
 
-def ai_parse_log(category, user_text, log_time, ref=""):
+def ai_parse_log(category, user_text, log_time, ref_data=""):
+    """카테고리별 AI 파싱 (확장된 카테고리 지원)"""
     client = OpenAI(api_key=OPENAI_API_KEY)
-    prompt = f"Log [{category}] at [{log_time}]: '{user_text}'. Output JSON summary."
+    
+    # 1. 섭취
+    if "섭취" in category:
+        system_role = """
+        You are a Korean Nutritionist.
+        Estimate nutrition based on standard Korean serving sizes.
+        Rules: Rice 1 bowl=300kcal. Alcohol: Soju 1 btl=7 glasses, Beer 1 btl=3 glasses.
+        Output JSON: {"calories": int, "food_name": "str", "macros": "탄:xx 단:xx 지:xx", "summary": "str"}
+        """
+    
+    # 2. 운동
+    elif "운동" in category:
+        system_role = """
+        Sports Data Analyst. Extract workout metrics.
+        Output JSON: {
+            "time": int, "type": "str", "calories": int,
+            "avg_bpm": int, "summary": "str"
+        }
+        """
+    
+    # 3. 음주
+    elif "음주" in category:
+        system_role = """
+        Alcohol consumption tracker.
+        [Conversion] 소주 1병=7잔, 맥주 1캔=1.5잔, 와인 1병=5잔
+        Output JSON: {
+            "alcohol_type": "소주/맥주/와인",
+            "standard_drinks": int,
+            "calories": int,
+            "summary": "소주 2병 (14잔, 1400kcal)"
+        }
+        """
+    
+    # 4. 영양제
+    elif "영양제" in category:
+        system_role = """
+        Supplement tracker.
+        Output JSON: {
+            "supplements": ["밀크씨슬", "오메가3" , "마그네슘"],
+            "count": int,
+            "summary": "영양제 3종 복용"
+        }
+        """
+    
+    # 5. 회복
+    elif "회복" in category:
+        system_role = """
+        Recovery activity tracker.
+        [Sauna] 1 cycle = 20분 (사우나10분+샤워2분+냉탕3분+휴식5분)
+        Output JSON: {
+            "activity_type": "sauna/meditation/massage",
+            "cycles": int (사우나만),
+            "duration": int,
+            "summary": "사우나 2사이클 (36분)"
+        }
+        """
+    
+    # 6. 노트
+    elif "노트" in category:
+        system_role = """
+        Health condition analyzer.
+        Output JSON: {
+            "symptoms": ["증상1"],
+            "stress_level": "high/medium/low",
+            "summary": "요약"
+        }
+        """
+    
+    # 7. 기타
+    else: 
+        system_role = "Health Logger. Output JSON with summary field."
+
+    prompt = f"User logged [{category}] at [{log_time}]. Text: '{user_text}'. {system_role} Return ONLY JSON."
+    
     try:
-        res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt}], response_format={"type":"json_object"})
-        return json.loads(res.choices[0].message.content)
-    except Exception as e: return {"summary":user_text, "error":str(e)}
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        return {"summary": user_text, "error": str(e)}
 
 def get_today_calendar_events():
     try:
