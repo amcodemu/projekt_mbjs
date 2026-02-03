@@ -630,27 +630,98 @@ with tab1:
         else: st.warning("No Data")
     except Exception as e: st.error(f"Error: {e}")
 
+# =========================================================
 # [TAB 2] 기록하기
+# =========================================================
 with tab2:
     now_kst = get_current_kst()
     today_str = now_kst.strftime('%Y-%m-%d')
+    
+    # ★★★ [추가] 미션 진행도 섹션 ★★★
+    st.markdown("### 🎯 미션 현황")
+    
+    # 현재 체중 가져오기
+    current_weight = 0.0
     try:
-        sh_a = get_db_connection("Action_Log")
-        df_a = pd.DataFrame(sh_a.get_all_records())
-        df_a['Date_Clean'] = pd.to_datetime(df_a['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
-        today_df = df_a[df_a['Date_Clean'] == today_str]
+        sh_h = get_db_connection("Health_Log")
+        df_h = pd.DataFrame(sh_h.get_all_records())
+        if not df_h.empty:
+            current_weight = float(df_h.iloc[-1]['Weight'])
+        else:
+            current_weight = 90.4  # 기본값
+    except:
+        current_weight = 90.4
+    
+    mission_status = calculate_mission_status(current_weight)
+    
+    with st.container(border=True):
+        if mission_status['active']:
+            st.success(f"🎯 {mission_status['name']} (D-{mission_status['days_remaining']})")
+            
+            # 시간 경과
+            st.caption(f"⏳ 시간 경과: {mission_status['progress_pct']:.1f}%")
+            st.progress(mission_status['progress_pct'] / 100)
+            
+            # 감량 진행
+            loss_amount = mission_status['actual_loss']
+            if loss_amount >= 0:
+                st.caption(f"📉 감량 진행: {mission_status['weight_progress_pct']:.1f}%")
+                st.progress(mission_status['weight_progress_pct'] / 100)
+                st.caption(f"👏 현재 {loss_amount:.1f}kg 감량 / 목표 {mission_status['target_loss']:.1f}kg")
+            else:
+                gain_amount = abs(loss_amount)
+                st.caption(f"🚨 **경고: 체중 증가!**")
+                st.progress(0)
+                st.markdown(f":red[**⚠️ 현재 {gain_amount:.1f}kg 증량**] / 목표 {mission_status['target_loss']:.1f}kg 감량")
+        else:
+            st.info("진행 중인 미션이 없습니다")
+    
+    st.divider()
+    
+    # ★★★ [개선] 오늘 요약 캐싱 ★★★
+    st.markdown("### 📊 오늘의 기록")
+    
+    @st.cache_data(ttl=300)
+    def get_today_summary(date_str):
+        try:
+            sh_a = get_db_connection("Action_Log")
+            df_a = pd.DataFrame(sh_a.get_all_records())
+            df_a['Date_Clean'] = pd.to_datetime(df_a['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
+            today_df = df_a[df_a['Date_Clean'] == date_str]
+            
+            cal = 0
+            mins = 0
+            for _, r in today_df.iterrows():
+                try:
+                    js = json.loads(r['AI_Analysis_JSON'])
+                    if '섭취' in r['Category']: cal += js.get('calories', 0)
+                    if '운동' in r['Category']: mins += js.get('time', 0)
+                except: pass
+            
+            return {'calories': cal, 'minutes': mins}
+        except:
+            return {'calories': 0, 'minutes': 0}
+    
+    summary = get_today_summary(today_str)
+    
+    with st.container(border=True):
+        sc1, sc2, sc3 = st.columns(3)
+        with sc1: st.metric("섭취 칼로리", f"{summary['calories']} kcal")
+        with sc2: st.metric("운동 시간", f"{summary['minutes']} 분")
         
-        cal = sum([json.loads(r['AI_Analysis_JSON']).get('calories',0) for _,r in today_df.iterrows() if '섭취' in r['Category'] and 'AI_Analysis_JSON' in r])
-        mins = sum([json.loads(r['AI_Analysis_JSON']).get('time',0) for _,r in today_df.iterrows() if '운동' in r['Category'] and 'AI_Analysis_JSON' in r])
-        
-        with st.container(border=True):
-            sc1, sc2, sc3 = st.columns(3)
-            with sc1: st.metric("오늘 섭취", f"{cal} kcal")
-            with sc2: st.metric("오늘 운동", f"{mins} 분")
-            with sc3: st.metric("Dry Feb", f"{now_kst.day}일차")
-    except: pass
+        # Dry Feb
+        with sc3:
+            mission = get_active_mission()
+            if mission:
+                rules = get_mission_rules(mission['mission_id'])
+                if 'alcohol_ban' in rules:
+                    ban_month = rules['alcohol_ban'].get('month')
+                    if now_kst.month == ban_month:
+                        st.metric("Dry Feb", f"{now_kst.day}/28일")
     
     st.write("")
+    
+    # ★★★ 입력 폼 ★★★
     with st.container(border=True):
         with st.form("log", clear_on_submit=True):
             c1, c2, c3, c4 = st.columns([1.3, 0.8, 0.8, 1.1])
@@ -665,15 +736,40 @@ with tab2:
                 with st.spinner("Saving..."):
                     tm = f"{h:02d}:{m:02d}"
                     parsed = ai_parse_log(cat, txt, tm)
-                    get_db_connection("Action_Log").append_row([d.strftime("%Y-%m-%d"), tm, cat, txt, json.dumps(parsed, ensure_ascii=False), ""])
-                    st.success("Saved!"); st.cache_data.clear()
-
+                    get_db_connection("Action_Log").append_row([
+                        d.strftime("%Y-%m-%d"), 
+                        tm, 
+                        cat, 
+                        txt, 
+                        json.dumps(parsed, ensure_ascii=False), 
+                        ""
+                    ])
+                    st.success("Saved!")
+                    
+                    # 캐시 클리어
+                    st.cache_data.clear()
+    
     st.divider()
+    
+    # ★★★ [개선] 아카이브 캐싱 ★★★
     with st.expander("📂 아카이브"):
+        @st.cache_data(ttl=300)
+        def load_archive_data():
+            sh_a = get_db_connection("Action_Log")
+            df = pd.DataFrame(sh_a.get_all_records())
+            return df
+        
         try:
-            if not df_a.empty: st.dataframe(df_a.iloc[::-1][['Date','Action_Time','Category','User_Input']], use_container_width=True, hide_index=True)
-        except: pass
-
+            df = load_archive_data()
+            if not df.empty:
+                st.dataframe(
+                    df.iloc[::-1][['Date','Action_Time','Category','User_Input']].head(50),
+                    use_container_width=True, 
+                    hide_index=True
+                )
+        except: 
+            st.error("로딩 실패")
+            
 # [TAB 3] Pit Wall
 with tab3:
     st.markdown("## 🏎️ The Pit Wall")
