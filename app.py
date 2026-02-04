@@ -109,12 +109,34 @@ def load_checkin_cache(date_key):
         return None
     except: return None
 
+
+def save_dailyfive_cache(date_key, sprint_id, data):
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        cache_file = os.path.join(CACHE_DIR, f"dailyfive_{date_key}_{sprint_id}.json")
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except:
+        return False
+
+def load_dailyfive_cache(date_key, sprint_id):
+    try:
+        cache_file = os.path.join(CACHE_DIR, f"dailyfive_{date_key}_{sprint_id}.json")
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return None
+    except:
+        return None
+
+
 def clear_old_caches(keep_days=7):
     try:
         if not os.path.exists(CACHE_DIR): return
         now = datetime.now()
         for filename in os.listdir(CACHE_DIR):
-            if filename.startswith("checkin_"):
+            if filename.startswith("checkin_") or filename.startswith("dailyfive_"):
                 filepath = os.path.join(CACHE_DIR, filename)
                 if (now - datetime.fromtimestamp(os.path.getmtime(filepath))).days > keep_days:
                     os.remove(filepath)
@@ -133,8 +155,41 @@ CALENDAR_IDS = {
 }
 
 # ==========================================
-# [백엔드 함수]
+# 백엔드 함수
 # ==========================================
+
+def build_dailyfive_status_text(date_key, sprint_id, df_action):
+    """Daily Five 목록 + Action_Log 기반 완료 추정 텍스트 생성"""
+    daily_five = load_dailyfive_cache(date_key, sprint_id)
+    if not daily_five or 'tasks' not in daily_five:
+        return "Daily Five: None"
+
+    # 오늘 로그에서 DF5 수행 흔적 찾기 (최소 규칙: 'DF5:' 포함)
+    today_logs = df_action[df_action['Date'] == date_key] if 'Date' in df_action.columns else df_action
+    inputs = " ".join([str(x) for x in today_logs.get('User_Input', []).tolist()]) if not today_logs.empty else ""
+    inputs_up = inputs.upper()
+
+    lines = ["[DAILY FIVE CHECKLIST]"]
+    for t in daily_five['tasks']:
+        tid = str(t.get('task_id', '')).upper()
+        title = str(t.get('title', '')).strip()
+
+        # 완료 판정 규칙(최소/견고):
+        # 1) "DF5: task_1" 같이 task_id가 언급되면 완료
+        # 2) 또는 "DF5:" 뒤에 title의 일부가 들어가면 완료(너무 짧으면 오탐 가능하니 길이 조건)
+        done = False
+        if tid and f"DF5:{tid}" in inputs_up.replace(" ", ""):
+            done = True
+        elif len(title) >= 6 and "DF5:" in inputs_up and title.upper()[:6] in inputs_up:
+            done = True
+
+        mark = "✅" if done else "⬜"
+        lines.append(f"{mark} ({t.get('task_id','')}) {title}")
+
+    lines.append("Rule: Mark ✅ when Action_Log contains 'DF5: task_id' or 'DF5: <title>'")
+    return "\n".join(lines)
+
+
 def get_current_kst():
     sys_now = datetime.now()
     if abs((sys_now - datetime.utcnow()).total_seconds()) < 300:
@@ -162,11 +217,21 @@ def get_db_connection(worksheet_name):
         creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
     return gspread.authorize(creds).open(SHEET_NAME).worksheet(worksheet_name)
 
-# [수면 시간 파싱 헬퍼 함수 추가]
+# [핵심 추가] API 호출 방어용 캐싱 함수 (15분간 데이터 저장)
+@st.cache_data(ttl=900)
+def fetch_sheet_data(worksheet_name):
+    """시트 데이터를 안전하게 가져오고, 에러 발생 시 빈 리스트를 반환하여 앱 멈춤 방지"""
+    try:
+        sheet = get_db_connection(worksheet_name)
+        return sheet.get_all_records()
+    except Exception as e:
+        print(f"⚠️ API Error ({worksheet_name}): {e}")
+        return []
+
 def parse_korean_datetime(dt_str):
     """구글 시트 형식(2026. 2. 3. 오전 12:39)을 datetime으로 변환"""
     try:
-        dt_str = dt_str.replace('.', '').strip()
+        dt_str = str(dt_str).replace('.', '').strip()
         parts = dt_str.split()
         year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
         ampm = parts[3]
@@ -182,8 +247,11 @@ def parse_korean_datetime(dt_str):
 @st.cache_data(ttl=3600)
 def get_active_mission():
     try:
-        sheet = get_db_connection("Missions")
-        for row in sheet.get_all_records():
+        # [수정] 직접 호출 대신 fetch_sheet_data 사용
+        records = fetch_sheet_data("Missions")
+        if not records: return None
+
+        for row in records:
             if row['Status'] == '진행중':
                 return {
                     'mission_id': row['Mission_ID'], 'name': row['Name'],
@@ -198,18 +266,249 @@ def get_active_mission():
 @st.cache_data(ttl=3600)
 def get_mission_rules(mission_id):
     try:
-        sheet = get_db_connection("Mission_Rules")
+        # [수정] 직접 호출 대신 fetch_sheet_data 사용
+        records = fetch_sheet_data("Mission_Rules")
         rules = {}
-        for row in sheet.get_all_records():
+        if not records: return rules
+
+        for row in records:
             if row['Mission_ID'] == mission_id:
                 try: rules[row['Rule_Type']] = json.loads(row['Rule_Value'])
                 except: rules[row['Rule_Type']] = row['Rule_Value']
         return rules
     except: return {}
 
+# ==========================================
+# [Sprint 관리 함수]
+# ==========================================
+
+@st.cache_data(ttl=3600)
+def get_active_sprint():
+    """현재 진행중인 스프린트 조회"""
+    try:
+        # [수정] 직접 호출 대신 fetch_sheet_data 사용
+        records = fetch_sheet_data("Sprints")
+        if not records: return None
+        
+        for sprint in records:
+            if sprint.get('Status', '').lower().strip() == 'active':
+                return {
+                    'sprint_id': sprint['Sprint_ID'],
+                    'name': sprint['Name'],
+                    'start_date': datetime.strptime(sprint['Start_Date'], '%Y-%m-%d'),
+                    'end_date': datetime.strptime(sprint['End_Date'], '%Y-%m-%d'),
+                    'duration_days': int(sprint['Duration_Days']),
+                    'description': sprint.get('Description', '')
+                }
+        return None
+    except Exception as e:
+        print(f"Error getting active sprint: {e}")
+        return None
+
+@st.cache_data(ttl=3600)
+def get_sprint_goals(sprint_id):
+    """스프린트 목표 조회"""
+    try:
+        # [수정] 직접 호출 대신 fetch_sheet_data 사용
+        all_goals = fetch_sheet_data("Sprint_Goals")
+        
+        goals = {}
+        for goal in all_goals:
+            if goal['Sprint_ID'] == sprint_id:
+                metric_type = goal['Metric_Type']
+                goals[metric_type] = {
+                    'goal_id': goal['Goal_ID'],
+                    'start_value': float(goal['Start_Value']),
+                    'target_value': float(goal['Target_Value']),
+                    'unit': goal['Unit'],
+                    'priority': int(goal['Priority'])
+                }
+        return goals
+    except Exception as e:
+        print(f"Error getting sprint goals: {e}")
+        return {}
+
+def calculate_sprint_progress(sprint, current_weight, current_hrv_avg=None):
+    """스프린트 진척도 계산"""
+    if not sprint:
+        return None
+    
+    try:
+        now = datetime.now()
+        days_passed = max(0, (now - sprint['start_date']).days)
+        days_remaining = max(0, (sprint['end_date'] - now).days)
+        
+        goals = get_sprint_goals(sprint['sprint_id'])
+        
+        if 'weight' not in goals:
+            return None
+        
+        weight_goal = goals['weight']
+        
+        total_loss = weight_goal['start_value'] - weight_goal['target_value']
+        daily_target = total_loss / sprint['duration_days']
+        expected_weight = weight_goal['start_value'] - (daily_target * days_passed)
+        
+        actual_delta = current_weight - expected_weight
+        
+        if actual_delta < -0.2:
+            pace_status = 'ahead'
+        elif actual_delta > 0.2:
+            pace_status = 'behind'
+        else:
+            pace_status = 'on-track'
+        
+        remaining_loss = current_weight - weight_goal['target_value']
+        required_daily_pace = remaining_loss / max(1, days_remaining)
+        
+        return {
+            'sprint': sprint,
+            'day': days_passed + 1,
+            'days_remaining': days_remaining,
+            'progress_pct': (days_passed / sprint['duration_days']) * 100,
+            'weight_start': weight_goal['start_value'],
+            'weight_target': weight_goal['target_value'],
+            'weight_current': current_weight,
+            'weight_expected': expected_weight,
+            'weight_delta': actual_delta,
+            'pace_status': pace_status,
+            'required_daily_pace': required_daily_pace,
+            'daily_target': daily_target
+        }
+    except Exception as e:
+        print(f"Error calculating sprint progress: {e}")
+        return None
+
+def get_sprint_context(current_weight):
+    """Sprint 컨텍스트 생성 (UI용)"""
+    sprint = get_active_sprint()
+    if not sprint:
+        return None
+    
+    progress = calculate_sprint_progress(sprint, current_weight)
+    return progress
+
+@st.cache_data(ttl=3600*24)
+def ai_generate_daily_five(date_key, sprint, current_status, context):
+    if not sprint: return None
+    
+    # [방어 로직] 진행률 계산 실패 시 중단
+    progress = calculate_sprint_progress(sprint, current_status['weight'])
+    if not progress: return None
+    
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    dt = datetime.strptime(date_key, '%Y-%m-%d')
+    weekday = "Weekday (Work 06-19)" if dt.weekday() < 5 else "Weekend (Free)"
+    
+    prompt = f"""
+    You are Sprint Coach. Your ONLY job: help user achieve sprint goal.
+
+    [SPRINT MISSION]
+    Sprint: {sprint['name']} (Day {progress['day']}/{sprint['duration_days']})
+    Goal: Lose {progress['weight_start'] - progress['weight_target']:.1f}kg in {sprint['duration_days']} days
+    Current Progress: {progress['weight_start'] - progress['weight_current']:.1f}kg lost
+    Expected: {progress['weight_start'] - progress['weight_expected']:.1f}kg
+    Status: {"⚠️ BEHIND" if progress['pace_status'] == 'behind' else "✅ AHEAD" if progress['pace_status'] == 'ahead' else "🎯 ON TRACK"}
+
+    [TODAY CONTEXT]
+    Date: {date_key} ({weekday})
+    HRV: {current_status['hrv']} | RHR: {current_status['rhr']}
+    Current Weight: {current_status['weight']:.1f}kg
+    Schedule: {context.get('calendar', 'None')}
+
+    [YOUR TASK]
+    Create EXACTLY 5 concrete actions that DIRECTLY cause weight loss TODAY.
+
+    [CRITICAL RULES - WHAT TO INCLUDE]
+    ✅ ONLY include actions that:
+    1. Burn calories (workouts, cardio, HIIT)
+    2. Reduce calorie intake (specific meals, calorie limits)
+    3. Control macros (protein targets, carb limits)
+
+    ✅ Examples of GOOD tasks(예시에 불과하니, 좀 더 창의적으로 생성해도 좋음):
+    - "트레드밀 HIIT 50분 (3분 달리기 속도 11km/h + 2분 걷기 x 10세트)"
+    - "저녁 탄수화물 30g 이하 (밥/면/빵 금지, 단백질 200g + 채소)"
+    - "점심 샐러드 필수 (닭가슴살 150g, 드레싱 최소, 총 500kcal)"
+    - "총 섭취 1700 kcal 이하 엄수"
+    - "계단 오르기 15분 추가 (점심시간, 200kcal 소모)"
+
+    ❌ NEVER include:
+    - General health: "충분한 수면", "물 2L 마시기", "스트레스 관리"
+    - Admin tasks: "건강 데이터 입력", "체중 측정"
+    - Vague goals: "운동하기", "건강한 식단"
+    - Generic recovery: "스트레칭", "명상" (unless sprint-critical)
+
+    [INTENSITY ADJUSTMENT]
+    Current Status: {progress['pace_status']}
+    Delta: {progress['weight_delta']:.2f}kg
+
+    {"[⚠️ BEHIND PACE - INTENSIFY]" if progress['pace_status'] == 'behind' else "[✅ AHEAD - MAINTAIN]" if progress['pace_status'] == 'ahead' else "[🎯 ON TRACK]"}
+
+    If BEHIND:
+    - Higher intensity workouts
+    - Stricter calorie deficit (1600-1700 kcal)
+    - Add extra cardio
+    - Aggressive tone: "오늘 빡세게!"
+
+    If AHEAD:
+    - Maintain current intensity
+    - Sustainable deficit (1800-1900 kcal)
+    - Balance strength + cardio
+    - Encouraging tone: "잘하고 있어!"
+
+    [OUTPUT FORMAT - JSON ONLY]
+    {{
+        "tasks": [
+            {{
+                "task_id": "task_1",
+                "category": "workout",
+                "priority": 1,
+                "title": "트레드밀 HIIT 50분",
+                "description": "3분 달리기 (속도 11km/h) + 2분 걷기 x 10세트. 목표: 600 kcal 소모",
+                "why": "목표보다 0.5kg 느림. 오늘 고강도 유산소로 적자 확대 필요",
+            }},
+            // ... 총 5개 (우선순위 순)
+        ],
+        "daily_message": "⚠️ 목표보다 0.5kg 느림! 오늘 빡세게 가야 함 💪",
+        "urgency_level": "high"
+    }}
+
+    CRITICAL: Each task MUST directly burn calories or reduce intake.
+    Ask yourself: "Will this move the scale DOWN today?" 
+    If NO → Don't include it.
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        result = json.loads(response.choices[0].message.content)
+
+        for i, task in enumerate(result['tasks']):
+            if 'task_id' not in task:
+                task['task_id'] = f"task_{i+1}"
+
+        return result
+        
+    except Exception as e:
+        print(f"Error generating daily five: {e}")
+        return None
+
 def calculate_mission_status(current_weight):
     mission = get_active_mission()
-    if not mission: return {'active': False, 'message': '진행 중인 미션 없음'}
+    
+    # [핵심 수정] 미션 데이터 로드 실패 시(API 에러) 앱 죽지 않게 가짜 데이터 반환
+    if not mission: 
+        return {
+            'active': False, 'message': '데이터 로딩 중...', 
+            'name': 'Loading...', 'mission_id': '0',
+            'current_weight': current_weight, 'target_weight': current_weight,
+            'start_weight': current_weight, 'days_remaining': 0, 'days_passed': 0,
+            'progress_pct': 0, 'weight_progress_pct': 0, 'daily_calories': 2000,
+            'actual_loss': 0, 'target_loss': 0
+        }
     
     now = datetime.now()
     total_days = (mission['end_date'] - mission['start_date']).days
@@ -246,12 +545,12 @@ def analyze_patterns(df_health, df_action):
     except: pass
     return patterns
 
-# ==========================================
-# [수정된 prepare_full_context] 수면 정보 결합
-# ==========================================
 def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=False):
     now_kst = get_current_kst()
+    
+    # [수정] mission 상태 계산을 안전하게 호출
     mission = calculate_mission_status(current_weight)
+    
     today_date_key = (now_kst - timedelta(days=1)).strftime('%Y-%m-%d') if now_kst.hour < 5 else now_kst.strftime('%Y-%m-%d')
 
     five_days_ago = (datetime.strptime(today_date_key, '%Y-%m-%d') - timedelta(days=5)).strftime('%Y-%m-%d')
@@ -263,22 +562,14 @@ def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=
         logs_by_date = []
         for date_str in dates_in_range:
             date_logs = recent_logs[recent_logs['Date'] == date_str]
-            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-            today_obj = datetime.strptime(today_date_key, '%Y-%m-%d')
-            days_ago = (today_obj - date_obj).days
-            
-            if days_ago == 0: date_label = f"━━━ {date_str} (오늘) ━━━"
-            elif days_ago == 1: date_label = f"━━━ {date_str} (어제) ━━━"
-            else: date_label = f"━━━ {date_str} ({days_ago}일 전) ━━━"
-            
+            # ... (기존 로직 유지) ...
             if date_logs.empty: logs_text = "(기록 없음)"
             else: logs_text = "\n".join([f"• [{r['Action_Time']}] {r['Category']}: {r['User_Input']}" for _, r in date_logs.sort_values('Action_Time').iterrows()])
-            logs_by_date.append(f"{date_label}\n{logs_text}")
+            logs_by_date.append(f"[{date_str}]\n{logs_text}") # 간략화
         recent_logs_text = "\n\n".join(logs_by_date)
     else:
         recent_logs_text = "기록 없음"
 
-    # [핵심 수정] 건강 지표 및 수면 시간 정밀 계산
     cutoff = (datetime.strptime(today_date_key, '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
     df_h_30 = df_health[df_health['Date'] >= cutoff].copy()
     
@@ -288,43 +579,25 @@ def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=
     hrv_avg = df_h_30.tail(7)['HRV'].mean() if not df_h_30.empty else 0
     rhr_avg = df_h_30.tail(7)['RHR'].mean() if not df_h_30.empty else 0
     
-    # [수면 시간 로직 업데이트]
     sleep_info = "No sleep data."
     if not df_h_30.empty:
         last = df_h_30.iloc[-1]
-        s_start = last.get('sleep_start', '')
-        s_end = last.get('sleep_end', '')
-        
-        # 실제 수면 시간 계산
-        dt_start = parse_korean_datetime(str(s_start))
-        dt_end = parse_korean_datetime(str(s_end))
-        
-        actual_sleep_duration = 0
-        if dt_start and dt_end:
-            duration = dt_end - dt_start
-            actual_sleep_duration = max(0, duration.total_seconds() / 3600)
-            
-            s_start_display = dt_start.strftime('%H:%M')
-            s_end_display = dt_end.strftime('%H:%M')
-            sleep_info = f"Last Night Sleep: {actual_sleep_duration:.1f}h (Bed: {s_start_display}, Wake: {s_end_display})"
-        else:
-            # 기존 컬럼(Sleep_duration) 백업용
-            sd = last.get('Sleep_duration', 0)
-            sleep_info = f"Last Sleep Duration (Legacy): {sd}h"
+        actual_sleep_duration = last.get('Sleep_duration', 0)
+        sleep_info = f"Last Sleep: {actual_sleep_duration}h"
 
     patterns = analyze_patterns(df_h_30, df_action[df_action['Date'] >= cutoff])
     ptn_txt = "\n".join([p['message'] for p in patterns]) if patterns else "None"
     
+    # [수정] mission['name']이 없어도 안전하게 출력
     return f"""
-[USER] Age:35, Male, Mission:{mission['name']}, Wt:{current_weight}kg
+[USER] Age:35, Male, Mission:{mission.get('name', 'N/A')}, Wt:{current_weight}kg
 
-[LOGS (Last 5 Days - BY DATE)]
+[LOGS (Last 5 Days)]
 {recent_logs_text}
 
 [TODAY: {today_date_key}]
-
 [STATS] HRV:{hrv_avg:.1f}, RHR:{rhr_avg:.1f}
-[SLEEP ANALYSIS] {sleep_info}
+[SLEEP] {sleep_info}
 [PATTERNS] {ptn_txt}
 """
 
@@ -340,7 +613,7 @@ def ai_generate_daily_checkin(date_key, hrv, rhr, weight, morning_context, calen
     Vitals: {date_key}, HRV:{hrv}, RHR:{rhr}, Wt:{weight}
     Schedule: {calendar_str}
     Constraint: {wc}
-    [RECOVERY GUIDELINES]  # ← 여기 추가!
+    [RECOVERY GUIDELINES]
     Include specific recovery strategies:
     - Sauna: Recommend 2-4 cycles (10min hot → 2min cold shower)
     - Meditation: 5-15 minutes, breathing exercises
@@ -371,10 +644,8 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
     now_kst = get_current_kst()
     weekday = now_kst.weekday()
     
-    # 활동 로그 텍스트
     activities_text = "\n".join([f"• {a}" for a in today_activities]) if today_activities else "아직 기록된 활동 없음"
     
-    # 평일/주말 규칙
     if weekday < 5: 
         constraint_text = """
         [CRITICAL TIME CONSTRAINTS (Weekdays)]
@@ -385,7 +656,6 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
     else:
         constraint_text = "[TIME CONSTRAINTS (Weekend)] User is free."
     
-    # 시간대 계산 (상대 시간)
     hour = now_kst.hour
     if hour < 9:
         time_of_day = "Early Morning"
@@ -406,7 +676,6 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
         time_of_day = "Night"
         time_remaining_desc = "Day is almost over"
     
-    # ★★★ full_context 다시 생성 (원본 시간 포함) ★★★
     try:
         sheet_health = get_db_connection("Health_Log")
         sheet_action = get_db_connection("Action_Log")
@@ -416,7 +685,15 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
     except:
         full_context = "[Context loading failed]"
     
-    # ★★★ 프롬프트 (상대 시간 사용) ★★★
+    date_key = get_mission_date_key()
+    dailyfive_txt = "Daily Five: None"
+    try:
+        sprint = get_active_sprint()
+        if sprint:
+            dailyfive_txt = build_dailyfive_status_text(date_key, sprint['sprint_id'], df_action)
+    except:
+        pass
+
     prompt = f"""
     You are 'Dr. MBJS', a 28-year-old female elite health performance coach who are lovely and admires the user and calls the user '찜머'
     
@@ -468,6 +745,8 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
     
     {full_context}
 
+    {dailyfive_txt}
+
     [CURRENT STATUS]
     Day: {now_kst.strftime('%A')}
     Time of Day: {time_of_day}
@@ -510,7 +789,6 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
         )
         result = json.loads(response.choices[0].message.content)
         
-        # ★★★ 생성 시점 시간 저장 ★★★
         now_kst = get_current_kst()
         result['generated_at'] = now_kst.strftime('%H:%M')
         result['generated_hours_left'] = 24 - now_kst.hour
@@ -526,7 +804,6 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
             "generated_hours_left": 24 - now_kst.hour
         }
 
-
 def ai_generate_action_plan(hrv, rhr, weight, full_context, today_activities):
     return ai_generate_action_plan_cached(hrv, rhr, weight, normalize_context_for_cache(full_context), tuple(today_activities))
 
@@ -534,26 +811,41 @@ def ai_parse_log(category, user_text, log_time, ref_data=""):
     """카테고리별 AI 파싱 (확장된 카테고리 지원)"""
     client = OpenAI(api_key=OPENAI_API_KEY)
     
-    # 1. 섭취
-    if "섭취" in category:
+    MY_SUPPLEMENTS = {
+        "마그네슘": "마그네슘 135mg",
+        "밀크시슬": "SAT 실리빈 150mg+아티초크 150mg+커큐민 150mg",
+        "락토핏": "유산균 20억 CFU + 아연 2.55mg",
+        "오메가3": "EPA+DHA 1000mg + 비타민E 11mg",
+        "비타민D3": "비타민D 100µg"
+    }
+
+    if "영양제" in category:
+        matched_info = []
+        for name, detail in MY_SUPPLEMENTS.items():
+            if name in user_text:
+                matched_info.append(detail)
+        
+        info_str = "\n".join(matched_info) if matched_info else "정보 없음"
+        
+        system_role = f"""
+        Supplement tracker. 
+        Refer to the master list if available:
+        {info_str}
+        
+        Output JSON: {{
+            "supplements": ["이름1", "이름2"],
+            "count": int,
+            "details": "{info_str}",
+            "summary": "영양제 X종 복용 (함량 포함)"
+        }}
+        """
+    
+    elif "섭취" in category:
         system_role = """
-        You are a Korean Nutritionist.
-        Estimate nutrition based on standard Korean serving sizes.
-        Rules: Rice 1 bowl=300kcal. Alcohol: Soju 1 btl=7 glasses, Beer 1 btl=3 glasses.
+        Nutritionist. Estimate calories/macros based on standard Korean servings.
         Output JSON: {"calories": int, "food_name": "str", "macros": "탄:xx 단:xx 지:xx", "summary": "str"}
         """
     
-    # 2. 운동
-    elif "운동" in category:
-        system_role = """
-        Sports Data Analyst. Extract workout metrics.
-        Output JSON: {
-            "time": int, "type": "str", "calories": int,
-            "avg_bpm": int, "summary": "str"
-        }
-        """
-    
-    # 3. 음주
     elif "음주" in category:
         system_role = """
         Alcohol consumption tracker.
@@ -566,18 +858,6 @@ def ai_parse_log(category, user_text, log_time, ref_data=""):
         }
         """
     
-    # 4. 영양제
-    elif "영양제" in category:
-        system_role = """
-        Supplement tracker.
-        Output JSON: {
-            "supplements": ["밀크씨슬", "오메가3" , "마그네슘"],
-            "count": int,
-            "summary": "영양제 3종 복용"
-        }
-        """
-    
-    # 5. 회복
     elif "회복" in category:
         system_role = """
         Recovery activity tracker.
@@ -590,7 +870,6 @@ def ai_parse_log(category, user_text, log_time, ref_data=""):
         }
         """
     
-    # 6. 노트
     elif "노트" in category:
         system_role = """
         Health condition analyzer.
@@ -601,7 +880,6 @@ def ai_parse_log(category, user_text, log_time, ref_data=""):
         }
         """
     
-    # 7. 기타
     else: 
         system_role = "Health Logger. Output JSON with summary field."
 
@@ -637,7 +915,7 @@ def get_today_calendar_events():
 # ==========================================
 # [메인 UI]
 # ==========================================
-tab1, tab2, tab3 = st.tabs(["📊 대시보드", "📝 기록하기", "🏎️ Pit Wall"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 대시보드", "🎯 Sprint", "📝 기록하기", "🏎️ Pit Wall"])
 
 # [TAB 1] Dashboard
 with tab1:
@@ -662,15 +940,9 @@ with tab1:
             
             st.caption(f"🕒 마지막 업데이트: {last_h.get('Date','Unknown')}")
 
-            # ----------------------------------------------------
-            # [수정 완료] HTML 들여쓰기 완전 제거 (Left-Align)
-            # ----------------------------------------------------
             hrv_icon = "🟢" if hrv_c >= 45 else "🔴"
             rhr_icon = "🟢" if rhr_c <= 65 else "🔴"
-            w_msg = f"{w_c - mission['target_weight']:.1f}kg 남음" if mission['active'] else "-"
-            w_col = "#3B82F6" if mission['active'] else "#64748B"
 
-            # 아래 문자열은 왼쪽 벽에 붙어있어야 함
             dashboard_html = f"""
 <div style="display: flex; gap: 8px; margin-bottom: 20px; width: 100%;">
 <div style="flex: 1; background: #FFFFFF; padding: 12px 5px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
@@ -686,7 +958,7 @@ with tab1:
 <div style="flex: 1; background: #FFFFFF; padding: 12px 5px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
 <div style="font-size: 14px; color: #64748B; font-weight: 600; margin-bottom: 4px;">체중</div>
 <div style="font-size: 30px; font-weight: 900; color: #1A2B4D; margin-bottom: 4px;">{w_c:.1f}</div>
-<div style="font-size: 11px; color: {w_col}; font-weight: 600;">{w_msg}</div>
+<div style="font-size: 11px; color: #64748B;">kg</div>
 </div>
 </div>
 """
@@ -694,7 +966,6 @@ with tab1:
             
             st.divider()
 
-            # Daily Check-in Header (Left-Align)
             checkin_lbl = f"{date_key} 05:00 기준"
             st.markdown(f"""<div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px;"><h3 style="margin: 0;">☀️ Daily Check-in</h3><span style="font-size: 11px; color: #94a3b8;">({checkin_lbl})</span></div>""", unsafe_allow_html=True)
 
@@ -712,25 +983,37 @@ with tab1:
                         ck_res = ai_generate_daily_checkin(date_key, float(m_row['HRV']), float(m_row['RHR']), float(m_row['Weight']), m_ctx, cal_txt)
                         save_checkin_cache(date_key, ck_res); clear_old_caches()
                 
+                try:
+                    sprint = get_active_sprint()
+                    if sprint:
+                        if not load_dailyfive_cache(date_key, sprint['sprint_id']):
+                            five = ai_generate_daily_five(
+                                date_key,
+                                sprint,
+                                {'weight': float(m_row['Weight']), 'hrv': float(m_row['HRV']), 'rhr': float(m_row['RHR'])},
+                                {'calendar': cal_txt}
+                            )
+                            if five:
+                                save_dailyfive_cache(date_key, sprint['sprint_id'], five)
+                except:
+                    pass
+
                 icon = {"Green":"🟢", "Red":"🔴"}.get(ck_res.get('condition_signal'), "🟡")
                 st.subheader(f"{icon} {ck_res.get('condition_title', 'Analyzing...')}")
                 with st.container(border=True): st.markdown(f"**🕵️ 분석:** {ck_res.get('analysis')}")
                 
                 st.write(""); st.markdown("**🎯 오늘의 전략**")
                 
-                # 전략 박스 (HTML Left-Align)
                 c1, c2, c3 = st.columns(3)
                 with c1: st.markdown(f"""<div class="strategy-box workout-box"><span class="strategy-title">💪 운동</span>{ck_res.get('mission_workout')}</div>""", unsafe_allow_html=True)
                 with c2: st.markdown(f"""<div class="strategy-box diet-box"><span class="strategy-title">🥗 식단</span>{ck_res.get('mission_diet')}</div>""", unsafe_allow_html=True)
                 with c3: st.markdown(f"""<div class="strategy-box recovery-box"><span class="strategy-title">🔋 회복</span>{ck_res.get('mission_recovery')}</div>""", unsafe_allow_html=True)
             else: st.info(f"💤 데이터 대기 중 ({date_key})")
             
-            # Action Plan
             st.write("")
             rt_ctx = prepare_full_context(df_h, df_a, w_c, False)
             ap = ai_generate_action_plan(hrv_c, rhr_c, w_c, rt_ctx, today_acts + [f"[CALENDAR] {cal_evts}"])
             
-            # Action Plan Header (Left-Align)
             st.markdown(f"""<h3 style="margin-bottom: 10px;">⚡ Action Plan <span class="time-badge">{ap.get('generated_at', now_kst.strftime('%H:%M'))} 기준</span></h3>""", unsafe_allow_html=True)
 
             with st.container(border=True):
@@ -741,57 +1024,179 @@ with tab1:
     except Exception as e: st.error(f"Error: {e}")
 
 # =========================================================
-# [TAB 2] 기록하기
+# [TAB 2] 🎯 Sprint
 # =========================================================
 with tab2:
+    st.markdown("## 🎯 Sprint")
+    
+    with st.spinner("로딩 중..."):
+        try:
+            @st.cache_data(ttl=300)
+            def get_current_health_data():
+                sh_h = get_db_connection("Health_Log")
+                df_h = pd.DataFrame(sh_h.get_all_records())
+                if df_h.empty:
+                    return None
+                last = df_h.iloc[-1]
+                return {
+                    'weight': float(last['Weight']),
+                    'hrv': float(last.get('HRV', 0)),
+                    'rhr': float(last.get('RHR', 0))
+                }
+            
+            health_data = get_current_health_data()
+            
+            if not health_data:
+                st.warning("건강 데이터 없음")
+            else:
+                current_weight = health_data['weight']
+                current_hrv = health_data['hrv']
+                current_rhr = health_data['rhr']
+                
+                sprint = get_active_sprint()
+                
+                if not sprint:
+                    st.info("🎯 진행 중인 Sprint가 없습니다")
+                else:
+                    st.markdown(f"### 🎯 Sprint: {sprint['name']}")
+                    
+                    progress = calculate_sprint_progress(sprint, current_weight)
+                    
+                    if progress:
+                        with st.container(border=True):
+                            day = progress['day']
+                            total = progress['sprint']['duration_days']
+                            progress_pct = progress['progress_pct']
+                            
+                            st.caption(f"Day {day}/{total}")
+                            st.progress(progress_pct / 100)
+                            
+                            st.write("")
+                            
+                            status_html = f"""
+                            <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+                            <div style="flex: 1; background: #FFFFFF; padding: 12px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center;">
+                            <div style="font-size: 12px; color: #64748B; margin-bottom: 4px;">시작</div>
+                            <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{progress['weight_start']:.1f}kg</div>
+                            </div>
+                            <div style="flex: 1; background: #FFFFFF; padding: 12px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center;">
+                            <div style="font-size: 12px; color: #64748B; margin-bottom: 4px;">현재</div>
+                            <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{progress['weight_current']:.1f}kg</div>
+                            <div style="font-size: 11px; color: #3B82F6; margin-top: 4px;">{progress['weight_current'] - progress['weight_start']:.1f}kg</div>
+                            </div>
+                            <div style="flex: 1; background: #FFFFFF; padding: 12px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center;">
+                            <div style="font-size: 12px; color: #64748B; margin-bottom: 4px;">목표</div>
+                            <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{progress['weight_target']:.1f}kg</div>
+                            </div>
+                            </div>
+                            """
+                            st.markdown(status_html, unsafe_allow_html=True)
+                            
+                            delta = progress['weight_delta']
+                            pace_status = progress['pace_status']
+                            remaining = progress['weight_current'] - progress['weight_target']
+                            
+                            if pace_status == 'ahead':
+                                st.success(f"🟢 목표보다 {abs(delta):.1f}kg 앞서감! ({remaining:.1f}kg 남음)")
+                            elif pace_status == 'behind':
+                                st.warning(f"🟡 목표보다 {abs(delta):.1f}kg 느림 ({remaining:.1f}kg 남음)")
+                                st.caption(f"💪 따라잡으려면: 하루 평균 -{progress['required_daily_pace']:.2f}kg 필요")
+                            else:
+                                st.info(f"🎯 완벽한 페이스! ({remaining:.1f}kg 남음)")
+                    
+                    st.divider()
+                    
+                    now_kst = get_current_kst()
+                    today_key = get_mission_date_key()
+                    
+                    st.markdown("### ✅ 오늘의 데일리 파이브")
+                    st.caption(f"🕐 {today_key} 05:00 생성")
+                    
+                    cal_events = get_today_calendar_events()
+                    cal_text = "\n".join([f"[운동]{e['time']} {e['title']}" for e in cal_events['Sports']] + 
+                                         [f"[일정]{e['time']} {e['title']}" for e in cal_events['Termin']])
+                    
+                    cached_five = load_dailyfive_cache(today_key, sprint['sprint_id'])
+                    if not cached_five:
+                        daily_five = ai_generate_daily_five(
+                            today_key, 
+                            sprint,
+                            {'weight': current_weight, 'hrv': current_hrv, 'rhr': current_rhr},
+                            {'calendar': cal_text}
+                        )
+                        if daily_five:
+                            save_dailyfive_cache(today_key, sprint['sprint_id'], daily_five)
+                            clear_old_caches()  # 기존 함수 재사용
+                    else:
+                        daily_five = cached_five
+                    
+                    if daily_five and 'tasks' in daily_five:
+                        
+                        if daily_five.get('daily_message'):
+                            urgency = daily_five.get('urgency_level', 'medium')
+                            if urgency == 'high':
+                                st.error(daily_five['daily_message'])
+                            elif urgency == 'low':
+                                st.success(daily_five['daily_message'])
+                            else:
+                                st.info(daily_five['daily_message'])
+                        
+                        st.write("")
+                        
+                        
+                        for task in daily_five['tasks']:
+                            priority = task.get('priority', 5)
+                            if priority <= 2:
+                                border_color = "#EF4444"
+                                icon = "🔥"
+                            else:
+                                border_color = "#3B82F6"
+                                icon = "⚡"
+                            bg_color = "#FFFFFF"
+
+                            task_html = f"""
+                            <div style="background: {bg_color}; padding: 16px; border-radius: 12px; border-left: 4px solid {border_color}; margin-bottom: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                            <div style="display: flex; align-items: flex-start; gap: 12px;">
+                            <div style="font-size: 24px; line-height: 1;">{icon}</div>
+                            <div style="flex: 1;">
+                            <div style="font-weight: 700; color: #1A2B4D; font-size: 16px; margin-bottom: 6px;">{task['title']}</div>
+                            <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;">{task['description']}</div>
+                            <div style="font-size: 12px; color: #94A3B8; font-style: italic;">💡 {task['why']}</div>
+                            </div>
+                            </div>
+                            </div>
+                            """
+                            st.markdown(task_html, unsafe_allow_html=True)
+                    
+                    else:
+                        st.warning("데일리 파이브 생성 실패")
+                    
+                    st.divider()
+                    
+                    st.markdown("### 📅 앞으로의 계획")
+                    st.caption("현재 페이스 유지 시 예상")
+                    
+                    with st.expander("내일 예상"):
+                        st.info("내일 아침 5시에 생성됩니다")
+                    
+                    with st.expander("모레 예상"):
+                        st.info("모레 아침 5시에 생성됩니다")
+                    
+        except Exception as e:
+            st.error(f"Error: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+# =========================================================
+# [TAB 3] 기록하기
+# =========================================================
+with tab3:
     now_kst = get_current_kst()
     today_str = now_kst.strftime('%Y-%m-%d')
     
-    # ★★★ [추가] 미션 진행도 섹션 ★★★
-    st.markdown("### 🎯 미션 현황")
-    
-    # 현재 체중 가져오기
-    current_weight = 0.0
-    try:
-        sh_h = get_db_connection("Health_Log")
-        df_h = pd.DataFrame(sh_h.get_all_records())
-        if not df_h.empty:
-            current_weight = float(df_h.iloc[-1]['Weight'])
-        else:
-            current_weight = 90.4  # 기본값
-    except:
-        current_weight = 90.4
-    
-    mission_status = calculate_mission_status(current_weight)
-    
-    with st.container(border=True):
-        if mission_status['active']:
-            st.success(f"🎯 {mission_status['name']} (D-{mission_status['days_remaining']})")
-            
-            # 시간 경과
-            st.caption(f"⏳ 시간 경과: {mission_status['progress_pct']:.1f}%")
-            st.progress(mission_status['progress_pct'] / 100)
-            
-            # 감량 진행
-            loss_amount = mission_status['actual_loss']
-            if loss_amount >= 0:
-                st.caption(f"📉 감량 진행: {mission_status['weight_progress_pct']:.1f}%")
-                st.progress(mission_status['weight_progress_pct'] / 100)
-                st.caption(f"👏 현재 {loss_amount:.1f}kg 감량 / 목표 {mission_status['target_loss']:.1f}kg")
-            else:
-                gain_amount = abs(loss_amount)
-                st.caption(f"🚨 **경고: 체중 증가!**")
-                st.progress(0)
-                st.markdown(f":red[**⚠️ 현재 {gain_amount:.1f}kg 증량**] / 목표 {mission_status['target_loss']:.1f}kg 감량")
-        else:
-            st.info("진행 중인 미션이 없습니다")
-    
-    st.divider()
-    
     st.markdown("### 📊 오늘의 기록")
 
-    # ★★★ 캐싱된 함수 ★★★
-    @st.cache_data(ttl=300)  # 5분 캐시
+    @st.cache_data(ttl=300)
     def get_today_summary(date_str):
         cal = 0
         mins = 0
@@ -813,10 +1218,8 @@ with tab2:
         
         return {'calories': cal, 'minutes': mins}
 
-    # 캐시된 데이터 가져오기
     summary = get_today_summary(today_str)
 
-    # ★★★ HTML 스타일링으로 표시 ★★★
     summary_html = f"""
     <div style="display: flex; gap: 8px; margin-bottom: 20px;">
     <div style="flex: 1; background: #FFFFFF; padding: 14px 8px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
@@ -835,10 +1238,8 @@ with tab2:
     """
     st.markdown(summary_html, unsafe_allow_html=True)
     
-    # ★★★ 입력 폼 ★★★
     with st.container(border=True):
         with st.form("log", clear_on_submit=True):
-            # ★★★ 한 줄에 4개 필드 ★★★
             c1, c2, c3, c4 = st.columns([2, 0.7, 0.7, 1.2])
             
             with c1: 
@@ -850,10 +1251,8 @@ with tab2:
             with c4: 
                 cat = st.selectbox("", ["섭취","운동","음주","영양제","회복","노트"], label_visibility="collapsed")
             
-            # 내용 입력
             txt = st.text_input("", placeholder="예: 닭가슴살 샐러드", label_visibility="collapsed")
             
-            # 저장 버튼
             if st.form_submit_button("🚀 저장", use_container_width=True) and txt:
                 with st.spinner("Saving..."):
                     tm = f"{h:02d}:{m:02d}"
@@ -871,7 +1270,6 @@ with tab2:
     
     st.divider()
     
-    # ★★★ [개선] 아카이브 캐싱 ★★★
     with st.expander("📂 아카이브"):
         @st.cache_data(ttl=300)
         def load_archive_data():
@@ -890,17 +1288,14 @@ with tab2:
         except: 
             st.error("로딩 실패")
 
-# [TAB 3] Pit Wall
-with tab3:
+# =========================================================
+# [TAB 4] Pit Wall
+# =========================================================
+with tab4:
     st.markdown("## 🏎️ The Pit Wall")
-    try:
-        sh_a = get_db_connection("Action_Log")
-        df = pd.DataFrame(sh_a.get_all_records())
-        bd = []
-        for _, r in df[df['Category'].str.contains("운동")].iterrows():
-            try:
-                js = json.loads(r['AI_Analysis_JSON'])
-                if js.get('cadence') or "벤치마크" in str(r['User_Input']): bd.append({'Date':r['Date'], 'BPM':js.get('avg_bpm',0)})
-            except: continue
-        st.info(f"데이터 {len(bd)}개" if bd else "없음")
-    except: st.error("Error")
+    st.info("개발자 도구 영역")
+    
+    if st.button("🔄 전체 캐시 클리어"):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.success("캐시 클리어 완료!")
