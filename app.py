@@ -342,8 +342,7 @@ def calculate_sprint_progress(sprint, current_weight, current_hrv_avg=None):
         
         if 'weight' not in goals:
             return None
-        
-        weight_goal = goals['weight']
+                weight_goal = goals['weight']
         
         total_loss = weight_goal['start_value'] - weight_goal['target_value']
         daily_target = total_loss / sprint['duration_days']
@@ -683,6 +682,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities):
         df_action = pd.DataFrame(sheet_action.get_all_records())
         full_context = prepare_full_context(df_health, df_action, weight, is_morning_fixed=False)
     except:
+        df_action = pd.DataFrame()
         full_context = "[Context loading failed]"
     
     date_key = get_mission_date_key()
@@ -931,7 +931,7 @@ with tab1:
             date_key = get_mission_date_key()
             cal_evts = get_today_calendar_events()
             
-            today_logs = df_a[df_a['Date'] == now_kst.strftime('%Y-%m-%d')]
+            today_logs = df_a[df_a['Date'] == date_key]
             today_acts = [f"[{r['Action_Time']}] {r['Category']}: {r['User_Input']}" for _, r in today_logs.iterrows()]
             
             last_h = df_h.iloc[-1]
@@ -1114,7 +1114,7 @@ with tab2:
                     
                     cal_events = get_today_calendar_events()
                     cal_text = "\n".join([f"[운동]{e['time']} {e['title']}" for e in cal_events['Sports']] + 
-                                         [f"[일정]{e['time']} {e['title']}" for e in cal_events['Termin']])
+                                         [f"[일정]{e['time']} {e['title']}" for e in cal_events['Termin']]) or "None"
                     
                     cached_five = load_dailyfive_cache(today_key, sprint['sprint_id'])
                     if not cached_five:
@@ -1251,7 +1251,7 @@ with tab3:
             with c4: 
                 cat = st.selectbox("", ["섭취","운동","음주","영양제","회복","노트"], label_visibility="collapsed")
             
-            txt = st.text_input("", placeholder="예: 닭가슴살 샐러드", label_visibility="collapsed")
+            txt = st.text_input("", placeholder="예: 닭가슴살 샐러드 / 데일리파이브 기록 등", label_visibility="collapsed")
             
             if st.form_submit_button("🚀 저장", use_container_width=True) and txt:
                 with st.spinner("Saving..."):
