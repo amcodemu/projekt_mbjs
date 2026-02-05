@@ -120,6 +120,26 @@ def save_dailyfive_cache(date_key, sprint_id, data):
     except:
         return False
 
+def save_trend_cache(date_key, data):
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        cache_file = os.path.join(CACHE_DIR, f"trend_{date_key}.json")
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except:
+        return False
+
+def load_trend_cache(date_key):
+    try:
+        cache_file = os.path.join(CACHE_DIR, f"trend_{date_key}.json")
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return None
+    except:
+        return None
+
 def load_dailyfive_cache(date_key, sprint_id):
     try:
         cache_file = os.path.join(CACHE_DIR, f"dailyfive_{date_key}_{sprint_id}.json")
@@ -136,7 +156,7 @@ def clear_old_caches(keep_days=7):
         if not os.path.exists(CACHE_DIR): return
         now = datetime.now()
         for filename in os.listdir(CACHE_DIR):
-            if filename.startswith("checkin_") or filename.startswith("dailyfive_"):
+            if filename.startswith("checkin_", "dailyfive_", "trend_") or filename.startswith("dailyfive_"):
                 filepath = os.path.join(CACHE_DIR, filename)
                 if (now - datetime.fromtimestamp(os.path.getmtime(filepath))).days > keep_days:
                     os.remove(filepath)
@@ -328,38 +348,116 @@ def get_sprint_goals(sprint_id):
         print(f"Error getting sprint goals: {e}")
         return {}
 
-def calculate_sprint_progress(sprint, current_weight, current_hrv_avg=None):
-    """스프린트 진척도 계산"""
+def ewma(values, alpha=0.35):
+    """
+    Exponentially Weighted Moving Average
+    values: 오래된 -> 최신 순의 숫자 리스트
+    alpha: 0~1 (높을수록 최신에 민감)
+    """
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return None
+    m = vals[0]
+    for x in vals[1:]:
+        m = alpha * x + (1 - alpha) * m
+    return m
+
+def compute_weight_trend_for_date(df_health, date_key, lookback_days=21, alpha=0.35):
+    """
+    date_key(YYYY-MM-DD) 기준으로,
+    해당 날짜까지의 체중 히스토리(lookback_days 범위)를 뽑아 EWMA 추세 체중을 계산.
+    """
+    if df_health is None or df_health.empty:
+        return None
+
+    df = df_health.copy()
+    df["Date_Clean"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df = df.dropna(subset=["Date_Clean"])
+
+    # date_key까지 포함해서 lookback_days 범위만
+    end_dt = datetime.strptime(date_key, "%Y-%m-%d")
+    start_dt = end_dt - timedelta(days=lookback_days)
+
+    df = df[(df["Date_Clean"] >= start_dt.strftime("%Y-%m-%d")) & (df["Date_Clean"] <= date_key)].copy()
+    if df.empty:
+        return None
+
+    # 같은 날짜가 여러 번 있으면 "마지막 입력"을 사용(보수적으로)
+    df["Weight_num"] = pd.to_numeric(df.get("Weight", 0), errors="coerce")
+    df = df.dropna(subset=["Weight_num"])
+    if df.empty:
+        return None
+
+    df = df.sort_values(["Date_Clean"])  # 날짜 기준 정렬
+    # 날짜별 마지막값만
+    df_last = df.groupby("Date_Clean", as_index=False).tail(1)
+
+    weights = df_last["Weight_num"].tolist()
+    trend = ewma(weights, alpha=alpha)
+
+    return {
+        "trend_weight": float(trend) if trend is not None else None,
+        "alpha": alpha,
+        "lookback_days": lookback_days,
+        "n_points": int(len(weights)),
+        "start_date": df_last["Date_Clean"].iloc[0],
+        "end_date": df_last["Date_Clean"].iloc[-1],
+    }
+
+def get_or_create_daily_trend(date_key, df_health):
+    """
+    ✅ 핵심: date_key별 Trend는 딱 1번만 계산해서 캐시에 고정.
+    - 이미 캐시가 있으면 무조건 그걸 사용 (재계산 금지)
+    - 캐시가 없으면 df_health로 계산 후 저장
+    """
+    cached = load_trend_cache(date_key)
+    if cached and cached.get("trend_weight") is not None:
+        return cached
+
+    computed = compute_weight_trend_for_date(df_health, date_key, lookback_days=21, alpha=0.35)
+    if computed and computed.get("trend_weight") is not None:
+        computed["computed_at_kst"] = get_current_kst().strftime("%Y-%m-%d %H:%M:%S")
+        save_trend_cache(date_key, computed)
+        clear_old_caches()
+        return computed
+
+    return None
+
+
+def calculate_sprint_progress(sprint, current_weight, trend_weight=None):
+    """스프린트 진척도 계산 (trend_weight 있으면 그걸 페이스 판정 기준으로 사용)"""
     if not sprint:
         return None
-    
+
     try:
-        now = datetime.now()
+        now = get_current_kst()
         days_passed = max(0, (now - sprint['start_date']).days)
         days_remaining = max(0, (sprint['end_date'] - now).days)
-        
+
         goals = get_sprint_goals(sprint['sprint_id'])
-        
         if 'weight' not in goals:
             return None
-                weight_goal = goals['weight']
-        
+
+        weight_goal = goals['weight']
         total_loss = weight_goal['start_value'] - weight_goal['target_value']
         daily_target = total_loss / sprint['duration_days']
         expected_weight = weight_goal['start_value'] - (daily_target * days_passed)
-        
-        actual_delta = current_weight - expected_weight
-        
+
+        # ✅ 페이스 기준 체중: trend_weight 우선, 없으면 current_weight
+        pace_weight = trend_weight if (trend_weight is not None) else current_weight
+
+        actual_delta = pace_weight - expected_weight
+
         if actual_delta < -0.2:
             pace_status = 'ahead'
         elif actual_delta > 0.2:
             pace_status = 'behind'
         else:
             pace_status = 'on-track'
-        
-        remaining_loss = current_weight - weight_goal['target_value']
+
+        remaining_loss = pace_weight - weight_goal['target_value']
         required_daily_pace = remaining_loss / max(1, days_remaining)
-        
+
         return {
             'sprint': sprint,
             'day': days_passed + 1,
@@ -368,6 +466,7 @@ def calculate_sprint_progress(sprint, current_weight, current_hrv_avg=None):
             'weight_start': weight_goal['start_value'],
             'weight_target': weight_goal['target_value'],
             'weight_current': current_weight,
+            'weight_trend': trend_weight,              # ✅ 추가
             'weight_expected': expected_weight,
             'weight_delta': actual_delta,
             'pace_status': pace_status,
@@ -377,6 +476,7 @@ def calculate_sprint_progress(sprint, current_weight, current_hrv_avg=None):
     except Exception as e:
         print(f"Error calculating sprint progress: {e}")
         return None
+
 
 def get_sprint_context(current_weight):
     """Sprint 컨텍스트 생성 (UI용)"""
@@ -929,6 +1029,10 @@ with tab1:
         if not df_h.empty:
             now_kst = get_current_kst()
             date_key = get_mission_date_key()
+
+            # ✅ [추가] 오늘 추세(EWMA) 1회 고정 생성
+            trend = get_or_create_daily_trend(date_key,df_h)
+
             cal_evts = get_today_calendar_events()
             
             today_logs = df_a[df_a['Date'] == date_key]
@@ -967,7 +1071,9 @@ with tab1:
             st.divider()
 
             checkin_lbl = f"{date_key} 05:00 기준"
-            st.markdown(f"""<div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px;"><h3 style="margin: 0;">☀️ Daily Check-in</h3><span style="font-size: 11px; color: #94a3b8;">({checkin_lbl})</span></div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px;"><h3 style="margin: 0;">☀️ Daily Check-in</h3>
+            <span style="font-size: 11px; color: #94a3b8;">({checkin_lbl})</span>
+            </div>""", unsafe_allow_html=True)
 
             df_h['Date_Clean'] = pd.to_datetime(df_h['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
             today_h = df_h[df_h['Date_Clean'] == date_key]
@@ -981,7 +1087,12 @@ with tab1:
                 if not ck_res:
                     with st.spinner("Analyzing..."):
                         ck_res = ai_generate_daily_checkin(date_key, float(m_row['HRV']), float(m_row['RHR']), float(m_row['Weight']), m_ctx, cal_txt)
-                        save_checkin_cache(date_key, ck_res); clear_old_caches()
+
+                        ck_res["generated_at_kst"] = get_current_kst().strftime("%Y-%m-%d %H:%M:%S")
+                        ck_res["date_key"] = date_key  # 기준일도 명시적으로 남김
+
+                        save_checkin_cache(date_key, ck_res)
+                        clear_old_caches()
                 
                 try:
                     sprint = get_active_sprint()
@@ -1027,8 +1138,6 @@ with tab1:
 # [TAB 2] 🎯 Sprint
 # =========================================================
 with tab2:
-    st.markdown("## 🎯 Sprint")
-    
     with st.spinner("로딩 중..."):
         try:
             @st.cache_data(ttl=300)
@@ -1060,7 +1169,20 @@ with tab2:
                 else:
                     st.markdown(f"### 🎯 Sprint: {sprint['name']}")
                     
-                    progress = calculate_sprint_progress(sprint, current_weight)
+                    # ✅ Tab2: 오늘 키(05:00 기준) 먼저 만든다
+                    date_key = get_mission_date_key()
+
+                    # ✅ Health_Log 로딩 (이미 위에서 health_data 받았지만, trend 계산엔 df_h가 필요)
+                    sh_h = get_db_connection("Health_Log")
+                    df_h = pd.DataFrame(sh_h.get_all_records())
+
+                    # ✅ trend는 "오늘 1회 고정" 캐시 함수로 가져온다 (없으면 계산해서 저장)
+                    trend = get_or_create_daily_trend(date_key, df_h)
+                    trend_weight = trend["trend_weight"] if trend else None
+
+                    # ✅ sprint progress는 trend_weight 기반으로 다시 계산
+                    progress = calculate_sprint_progress(sprint, current_weight, trend_weight=trend_weight)
+
                     
                     if progress:
                         with st.container(border=True):
@@ -1103,23 +1225,29 @@ with tab2:
                                 st.caption(f"💪 따라잡으려면: 하루 평균 -{progress['required_daily_pace']:.2f}kg 필요")
                             else:
                                 st.info(f"🎯 완벽한 페이스! ({remaining:.1f}kg 남음)")
+
+                            if trend_weight is not None:
+                                st.caption(f"📈 페이스 판정 기준: 추세체중(EWMA) {trend_weight:.2f}kg (오늘 고정)")
+                            else:
+                                st.caption("📈 페이스 판정 기준: 현재체중(추세체중 캐시 없음)")
+                                
                     
                     st.divider()
                     
                     now_kst = get_current_kst()
-                    today_key = get_mission_date_key()
-                    
+                    trend = load_trend_cache(date_key)
+
                     st.markdown("### ✅ 오늘의 데일리 파이브")
-                    st.caption(f"🕐 {today_key} 05:00 생성")
+                    st.caption(f"🕐 {date_key} 05:00 생성")
                     
                     cal_events = get_today_calendar_events()
                     cal_text = "\n".join([f"[운동]{e['time']} {e['title']}" for e in cal_events['Sports']] + 
                                          [f"[일정]{e['time']} {e['title']}" for e in cal_events['Termin']]) or "None"
                     
-                    cached_five = load_dailyfive_cache(today_key, sprint['sprint_id'])
+                    cached_five = load_dailyfive_cache(date_key, sprint['sprint_id'])
                     if not cached_five:
                         daily_five = ai_generate_daily_five(
-                            today_key, 
+                            date_key, 
                             sprint,
                             {'weight': current_weight, 'hrv': current_hrv, 'rhr': current_rhr},
                             {'calendar': cal_text}
@@ -1295,6 +1423,10 @@ with tab4:
     st.markdown("## 🏎️ The Pit Wall")
     st.info("개발자 도구 영역")
     
+    st.write("server now:", datetime.now())
+    st.write("kst now:", get_current_kst())
+    st.write("sprint start:", sprint['start_date'])
+
     if st.button("🔄 전체 캐시 클리어"):
         st.cache_data.clear()
         st.cache_resource.clear()
