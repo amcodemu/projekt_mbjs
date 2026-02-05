@@ -1334,55 +1334,15 @@ with tab2:
             st.code(traceback.format_exc())
 
 # =========================================================
-# [TAB 3] 기록하기
+# [TAB 3] 기록하기 (드롭다운 유지 / 시-분 분리 / 아카이브 지연 로딩)
 # =========================================================
 with tab3:
     now_kst = get_current_kst()
     today_str = now_kst.strftime('%Y-%m-%d')
-    
-    st.markdown("### 🚀 빠른 입력")
-    
-    with st.container(border=True):
-        c1, c2, c3, c4 = st.columns([2, 0.7, 0.7, 1.2])
-        
-        with c1: 
-            d = st.date_input("", now_kst.date(), label_visibility="collapsed", key="log_date")
-        with c2: 
-            h = st.selectbox("", range(24), index=now_kst.hour, label_visibility="collapsed", key="log_hour")
-        with c3: 
-            m = st.selectbox("", list(range(0,60,5)), index=(now_kst.minute//5), label_visibility="collapsed", key="log_min")
-        with c4: 
-            cat = st.selectbox("", ["섭취","운동","음주","영양제","회복","노트"], label_visibility="collapsed", key="log_cat")
-        
-        txt = st.text_area(
-            "", 
-            placeholder="예: 닭가슴살 샐러드",
-            height=80,
-            label_visibility="collapsed",
-            key="log_text"
-        )
-        
-        if st.button("🚀 저장", use_container_width=True, key="log_submit"):
-            if txt:
-                with st.spinner("Saving..."):
-                    tm = f"{h:02d}:{m:02d}"
-                    parsed = ai_parse_log(cat, txt, tm)
-                    get_db_connection("Action_Log").append_row([
-                        d.strftime("%Y-%m-%d"), 
-                        tm, 
-                        cat, 
-                        txt, 
-                        json.dumps(parsed, ensure_ascii=False), 
-                        ""
-                    ])
-                    st.success("✓ 저장 완료!")
-                    st.cache_data.clear()
-                    st.rerun()
-            else:
-                st.warning("내용을 입력하세요")
-    
-    st.divider()
-    
+
+    # -----------------------------
+    # 1) 오늘의 기록 (상단)
+    # -----------------------------
     st.markdown("### 📊 오늘의 기록")
 
     @st.cache_data(ttl=300)
@@ -1392,60 +1352,166 @@ with tab3:
         try:
             sh_a = get_db_connection("Action_Log")
             df_a = pd.DataFrame(sh_a.get_all_records())
-            
+
             if not df_a.empty:
-                df_a['Date_Clean'] = pd.to_datetime(df_a['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
-                today_df = df_a[df_a['Date_Clean'] == date_str]
-                
+                df_a["Date_Clean"] = pd.to_datetime(df_a["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+                today_df = df_a[df_a["Date_Clean"] == date_str]
+
                 for _, r in today_df.iterrows():
                     try:
-                        js = json.loads(r['AI_Analysis_JSON'])
-                        if '섭취' in r['Category']: cal += js.get('calories', 0)
-                        if '운동' in r['Category']: mins += js.get('time', 0)
-                    except: pass
-        except: pass
-        
-        return {'calories': cal, 'minutes': mins}
+                        js = json.loads(r.get("AI_Analysis_JSON", "{}") or "{}")
+                        cat = str(r.get("Category", ""))
+                        if "섭취" in cat:
+                            cal += int(js.get("calories", 0) or 0)
+                        if "운동" in cat:
+                            mins += int(js.get("time", js.get("duration", 0)) or 0)
+                    except:
+                        pass
+        except:
+            pass
+
+        return {"calories": cal, "minutes": mins}
 
     summary = get_today_summary(today_str)
 
     summary_html = f"""
-    <div style="display: flex; gap: 8px; margin-bottom: 20px;">
-    <div style="flex: 1; background: #FFFFFF; padding: 14px 8px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
-    <div style="font-size: 12px; color: #64748B; font-weight: 600; margin-bottom: 6px;">섭취 칼로리</div>
-    <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{summary['calories']} kcal</div>
-    </div>
-    <div style="flex: 1; background: #FFFFFF; padding: 14px 8px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
-    <div style="font-size: 12px; color: #64748B; font-weight: 600; margin-bottom: 6px;">운동 시간</div>
-    <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{summary['minutes']} 분</div>
-    </div>
-    <div style="flex: 1; background: #FFFFFF; padding: 14px 8px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
-    <div style="font-size: 12px; color: #64748B; font-weight: 600; margin-bottom: 6px;">Dry Feb</div>
-    <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{now_kst.day}/28일</div>
-    </div>
+    <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+      <div style="flex:1; min-width:140px; background:#FFFFFF; padding:14px 8px; border-radius:12px; border:1px solid #E2E8F0; text-align:center; box-shadow:0 1px 2px rgba(0,0,0,0.05);">
+        <div style="font-size:12px; color:#64748B; font-weight:600; margin-bottom:6px;">섭취 칼로리</div>
+        <div style="font-size:22px; font-weight:900; color:#1A2B4D;">{summary['calories']} kcal</div>
+      </div>
+
+      <div style="flex:1; min-width:140px; background:#FFFFFF; padding:14px 8px; border-radius:12px; border:1px solid #E2E8F0; text-align:center; box-shadow:0 1px 2px rgba(0,0,0,0.05);">
+        <div style="font-size:12px; color:#64748B; font-weight:600; margin-bottom:6px;">운동 시간</div>
+        <div style="font-size:22px; font-weight:900; color:#1A2B4D;">{summary['minutes']} 분</div>
+      </div>
+
+      <div style="flex:1; min-width:140px; background:#FFFFFF; padding:14px 8px; border-radius:12px; border:1px solid #E2E8F0; text-align:center; box-shadow:0 1px 2px rgba(0,0,0,0.05);">
+        <div style="font-size:12px; color:#64748B; font-weight:600; margin-bottom:6px;">Dry Feb</div>
+        <div style="font-size:22px; font-weight:900; color:#1A2B4D;">{now_kst.day}/28일</div>
+      </div>
     </div>
     """
     st.markdown(summary_html, unsafe_allow_html=True)
-    
+
     st.divider()
-    
-    with st.expander("📂 아카이브"):
+
+    # -----------------------------
+    # 2) 기록하기 (중단)
+    # - 시간: 시/분 선택만 (키보드 입력 X)
+    # - 카테고리: 드롭다운 유지 (selectbox)
+    # -----------------------------
+    st.markdown("### ✍️ 기록하기")
+
+    default_date = now_kst.date()
+    default_hour = now_kst.hour
+    default_minute = (now_kst.minute // 5) * 5
+
+    categories = ["섭취", "운동", "음주", "영양제", "회복", "노트"]
+
+    with st.container(border=True):
+        with st.form("log_form", clear_on_submit=True):
+            c1, c2, c3, c4 = st.columns([1.2, 0.9, 0.9, 1.2])
+
+            with c1:
+                log_date = st.date_input(
+                    "날짜",
+                    value=default_date,
+                    key="log_date_widget",
+                    label_visibility="collapsed",
+                )
+
+            with c2:
+                log_hour = st.selectbox(
+                    "시",
+                    options=list(range(0, 24)),
+                    index=default_hour,
+                    key="log_hour_widget",
+                    label_visibility="collapsed",
+                )
+
+            with c3:
+                minute_options = list(range(0, 60, 5))
+                log_minute = st.selectbox(
+                    "분",
+                    options=minute_options,
+                    index=minute_options.index(default_minute) if default_minute in minute_options else 0,
+                    key="log_minute_widget",
+                    label_visibility="collapsed",
+                )
+
+            with c4:
+                # ✅ 드롭다운 유지 (입력 불가: 원래 selectbox는 입력 위젯이 아님)
+                log_category = st.selectbox(
+                    "카테고리",
+                    options=categories,
+                    index=0,
+                    key="log_category_widget",
+                    label_visibility="collapsed",
+                )
+
+            log_time = f"{int(log_hour):02d}:{int(log_minute):02d}"
+
+            log_text = st.text_area(
+                "내용",
+                placeholder="예: 닭가슴살 샐러드 / 러닝 5km / 맥주 2잔 / SAT 복용 / 사우나 2세트 / 야근으로 운동 못함",
+                height=120,
+                key="log_text_widget",
+                label_visibility="collapsed",
+            )
+
+            submitted = st.form_submit_button("🚀 저장", use_container_width=True)
+
+        if submitted:
+            text_clean = (log_text or "").strip()
+            if not text_clean:
+                st.error("⚠️ 내용을 입력해주세요.")
+            else:
+                try:
+                    with st.spinner("저장 중..."):
+                        parsed = ai_parse_log(log_category, text_clean, log_time)
+                        get_db_connection("Action_Log").append_row([
+                            log_date.strftime("%Y-%m-%d"),
+                            log_time,
+                            log_category,
+                            text_clean,
+                            json.dumps(parsed, ensure_ascii=False),
+                            ""
+                        ])
+                    st.success("✅ 저장 완료!")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
+
+    st.divider()
+
+    # -----------------------------
+    # 3) 아카이브 (최하단 / 접을 수 있게 / 펼칠 때만 로딩)
+    # -----------------------------
+    with st.expander("📂 아카이브 (펼치면 로딩)", expanded=False):
+
         @st.cache_data(ttl=300)
         def load_archive_data():
             sh_a = get_db_connection("Action_Log")
-            df = pd.DataFrame(sh_a.get_all_records())
-            return df
-        
+            return pd.DataFrame(sh_a.get_all_records())
+
         try:
             df = load_archive_data()
-            if not df.empty:
+            if df.empty:
+                st.info("아직 기록이 없습니다.")
+            else:
+                view_cols = [c for c in ["Date", "Action_Time", "Category", "User_Input"] if c in df.columns]
                 st.dataframe(
-                    df.iloc[::-1][['Date','Action_Time','Category','User_Input']].head(50),
-                    use_container_width=True, 
-                    hide_index=True
+                    df.iloc[::-1][view_cols].head(100),
+                    use_container_width=True,
+                    hide_index=True,
                 )
-        except: 
-            st.error("로딩 실패")
+        except Exception as e:
+            st.error(f"로딩 실패: {e}")
+
+
+
 
 # =========================================================
 # [TAB 4] Pit Wall
