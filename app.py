@@ -1340,25 +1340,30 @@ with tab3:
     now_kst = get_current_kst()
     today_str = now_kst.strftime('%Y-%m-%d')
     
-    # ★★★ 입력 폼을 제일 위로 이동 ★★★
     st.markdown("### 🚀 빠른 입력")
     
     with st.container(border=True):
-        with st.form("log", clear_on_submit=True):
-            c1, c2, c3, c4 = st.columns([2, 0.7, 0.7, 1.2])
-            
-            with c1: 
-                d = st.date_input("", now_kst.date(), label_visibility="collapsed")
-            with c2: 
-                h = st.selectbox("", range(24), index=now_kst.hour, label_visibility="collapsed")
-            with c3: 
-                m = st.selectbox("", list(range(0,60,5)), index=(now_kst.minute//5), label_visibility="collapsed")
-            with c4: 
-                cat = st.selectbox("", ["섭취","운동","음주","영양제","회복","노트"], label_visibility="collapsed")
-            
-            txt = st.text_input("", placeholder="예: 닭가슴살 샐러드", label_visibility="collapsed")
-            
-            if st.form_submit_button("🚀 저장", use_container_width=True) and txt:
+        c1, c2, c3, c4 = st.columns([2, 0.7, 0.7, 1.2])
+        
+        with c1: 
+            d = st.date_input("", now_kst.date(), label_visibility="collapsed", key="log_date")
+        with c2: 
+            h = st.selectbox("", range(24), index=now_kst.hour, label_visibility="collapsed", key="log_hour")
+        with c3: 
+            m = st.selectbox("", list(range(0,60,5)), index=(now_kst.minute//5), label_visibility="collapsed", key="log_min")
+        with c4: 
+            cat = st.selectbox("", ["섭취","운동","음주","영양제","회복","노트"], label_visibility="collapsed", key="log_cat")
+        
+        txt = st.text_area(
+            "", 
+            placeholder="예: 닭가슴살 샐러드",
+            height=80,
+            label_visibility="collapsed",
+            key="log_text"
+        )
+        
+        if st.button("🚀 저장", use_container_width=True, key="log_submit"):
+            if txt:
                 with st.spinner("Saving..."):
                     tm = f"{h:02d}:{m:02d}"
                     parsed = ai_parse_log(cat, txt, tm)
@@ -1370,12 +1375,14 @@ with tab3:
                         json.dumps(parsed, ensure_ascii=False), 
                         ""
                     ])
-                    st.success("Saved!")
+                    st.success("✓ 저장 완료!")
                     st.cache_data.clear()
+                    st.rerun()
+            else:
+                st.warning("내용을 입력하세요")
     
     st.divider()
     
-    # ★★★ 이제 통계 표시 ★★★
     st.markdown("### 📊 오늘의 기록")
 
     @st.cache_data(ttl=300)
@@ -1418,7 +1425,9 @@ with tab3:
     </div>
     </div>
     """
+    st.markdown(summary_html, unsafe_allow_html=True)
     
+    st.divider()
     
     with st.expander("📂 아카이브"):
         @st.cache_data(ttl=300)
@@ -1437,25 +1446,7 @@ with tab3:
                 )
         except: 
             st.error("로딩 실패")
-    
-    # ★★★ iOS 키보드 대응 JavaScript ★★★
-    st.markdown("""
-    <script>
-    if (/iPhone|iPad|iPod/.test(navigator.userAgent)) {
-        document.addEventListener('focus', function(e) {
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') {
-                setTimeout(function() {
-                    e.target.scrollIntoView({behavior: 'smooth', block: 'center'});
-                }, 300);
-            }
-        }, true);
-    }
-    </script>
-    """, unsafe_allow_html=True)
 
-# =========================================================
-# [TAB 4] Pit Wall
-# =========================================================
 # =========================================================
 # [TAB 4] Pit Wall
 # =========================================================
