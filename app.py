@@ -1037,7 +1037,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 대시보드", "🎯 Sprint", "📝 기�
 
 # [TAB 1] Dashboard
 with tab1:
-    st.markdown("### 📡 Real-time Bio-Dashboard")
+    st.markdown("### 📡 Real-time Bio-Stat")
     try:
         sh_h = get_db_connection("Health_Log")
         sh_a = get_db_connection("Action_Log")
@@ -1086,8 +1086,6 @@ with tab1:
 """
             st.markdown(dashboard_html, unsafe_allow_html=True)
             
-            st.divider()
-
             checkin_lbl = f"{date_key} 05:00 기준"
             st.markdown(f"""<div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px;"><h3 style="margin: 0;">☀️ Daily Check-in</h3>
             <span style="font-size: 11px; color: #94a3b8;">({checkin_lbl})</span>
