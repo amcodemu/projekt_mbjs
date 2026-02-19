@@ -129,14 +129,23 @@ def load_checkin_cache(date_key):
 
 
 def save_dailyfive_cache(date_key, sprint_id, data):
+    local_ok = False
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
         cache_file = os.path.join(CACHE_DIR, f"dailyfive_{date_key}_{sprint_id}.json")
         with open(cache_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        return True
+        local_ok = True
     except:
-        return False
+        local_ok = False
+
+    sheet_ok = False
+    try:
+        sheet_ok = persist_dailyfive_to_sheet(date_key, sprint_id, data)
+    except:
+        sheet_ok = False
+
+    return local_ok or sheet_ok
 
 def save_trend_cache(date_key, data):
     try:
@@ -164,23 +173,39 @@ def load_dailyfive_cache(date_key, sprint_id):
         if os.path.exists(cache_file):
             with open(cache_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        return None
     except:
-        return None
+        pass
 
-def save_xw_cache(date_key, sprint_id, data):
+    # /tmp 캐시에 없으면 시트에서 복원 시도
+    try:
+        from_sheet = load_dailyfive_from_sheet(date_key, sprint_id)
+        if from_sheet:
+            try:
+                os.makedirs(CACHE_DIR, exist_ok=True)
+                cache_file = os.path.join(CACHE_DIR, f"dailyfive_{date_key}_{sprint_id}.json")
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(from_sheet, f, ensure_ascii=False, indent=2)
+            except:
+                pass
+            return from_sheet
+    except:
+        pass
+
+    return None
+
+def save_xc_cache(date_key, sprint_id, data):
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
-        cache_file = os.path.join(CACHE_DIR, f"xw_{date_key}_{sprint_id}.json")
+        cache_file = os.path.join(CACHE_DIR, f"xc_{date_key}_{sprint_id}.json")
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return True
     except:
         return False
 
-def load_xw_cache(date_key, sprint_id):
+def load_xc_cache(date_key, sprint_id):
     try:
-        cache_file = os.path.join(CACHE_DIR, f"xw_{date_key}_{sprint_id}.json")
+        cache_file = os.path.join(CACHE_DIR, f"xc_{date_key}_{sprint_id}.json")
         if os.path.exists(cache_file):
             with open(cache_file, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -194,12 +219,13 @@ def clear_old_caches(keep_days=7):
     try:
         if not os.path.exists(CACHE_DIR):
             return
-        now = datetime.now()
+        now = get_current_kst()
         for filename in os.listdir(CACHE_DIR):
             # ✅ [FIX] startswith 사용 오류 수정
-            if filename.startswith(("checkin_", "dailyfive_", "trend_", "xw_")):
+            if filename.startswith(("checkin_", "dailyfive_", "trend_", "xc_", "xw_")):
                 filepath = os.path.join(CACHE_DIR, filename)
-                if (now - datetime.fromtimestamp(os.path.getmtime(filepath))).days > keep_days:
+                file_dt = datetime.fromtimestamp(os.path.getmtime(filepath), tz=KST)
+                if (now - file_dt).days > keep_days:
                     os.remove(filepath)
     except:
         pass
@@ -217,16 +243,42 @@ CALENDAR_IDS = {
 }
 
 KST = ZoneInfo("Asia/Seoul")
+DEBUG_MODE = os.getenv("MBJS_DEBUG", "0") == "1"
 
 LATE_MODE_START_HOUR = 20
-LATE_MODE_START_MIN = 30  # 20:30 이후에는 장시간 운동 제안 금지를 위한 상수 
+LATE_MODE_START_MIN = 30  # 20:30 이후에는 장시간 운동 제안 금지를 위한 상수
+DAY_WRAPUP_START_HOUR = 21
+DAY_WRAPUP_START_MIN = 0  # 21:00 이후 신규 운동 제안 차단, 하루 마무리 모드
+XC_BASELINE_KG = 0.30
+XC_MIN_KG = -0.20
+XC_MAX_KG = 0.50
 
-# xW(채찍) 세기 조절 파라미터
-XW_PENALTY_BASE = 0.07          # 기본 채찍 (kg)
-XW_PENALTY_MAX = 0.25           # 과도해지지 않게 상한 (kg)
-XW_BEHIND_BONUS = 0.08          # 페이스 뒤처질 때 추가 채찍 (kg)
-XW_NO_WORKOUT_SLOT_BONUS = 0.05 # 운동 슬롯이 막혀있을 때(대신 식단으로 더 조여야 함) (kg)
-XW_WEEKEND_BONUS = 0.03         # 주말은 더 빡세게 (kg)
+XC_ADJ = {
+    "yesterday_no_workout": 0.10,
+    "yesterday_kcal_mid_high": 0.07,
+    "yesterday_kcal_very_high": 0.11,
+    "yesterday_alcohol": 0.07,
+    "streak_overeat_2d": 0.05,
+    "streak_no_workout_2d": 0.06,
+    "streak_alcohol_2d": 0.04,
+    "sprint_behind": 0.07,
+    "sprint_far_behind": 0.04,
+    "sprint_ahead_relief": -0.05,
+    "slot_evening_open_push": 0.12,
+    "slot_lunch_open_push": 0.05,
+    "slot_no_enabled_reality": -0.24,
+    "slot_single_enabled_reality": -0.09,
+    "bio_low_hrv": -0.06,
+    "bio_very_low_hrv": -0.10,
+    "bio_high_rhr": -0.06,
+    "bio_very_high_rhr": -0.10,
+    "bio_combined_risk": -0.05,
+}
+
+URGENCY_THRESHOLDS = {
+    "high": 7,
+    "medium": 4,
+}
 
 
 HUMANIZE_MAP = {
@@ -242,6 +294,80 @@ HUMANIZE_MAP = {
     "walk_stairs": "걷기/계단 20분",
     "tennis_90": "테니스 90분",
 }
+
+NUTRITION_STOPWORDS = {
+    "인분", "그릇", "공기", "마리", "캔", "병", "잔", "개", "세트", "조각", "컵",
+    "섭취", "먹음", "먹었다", "먹었음", "먹기", "음식", "식사", "간식",
+    "오늘", "점심", "저녁", "아침", "메뉴", "추가", "정도",
+}
+
+FOOD_ALIAS_MAP = {
+    "후라이드치킨": "치킨",
+    "치킨": "치킨",
+    "라면": "라면",
+    "떡국": "떡국",
+    "비빔밥": "비빔밥",
+    "쌀밥": "쌀밥",
+    "밥": "밥",
+    "콜라": "콜라",
+    "햄버거": "햄버거",
+    "피자": "피자",
+    "김밥": "김밥",
+}
+
+BEVERAGE_TOKENS = {"콜라", "사이다", "주스", "음료"}
+
+NUTRITION_FALLBACK_PROFILE = {
+    # values are approximate per 1 serving unit
+    "후라이드치킨": {"kcal": 1200.0, "protein": 72.0, "fat": 74.0, "carbs": 48.0},
+    "치킨": {"kcal": 980.0, "protein": 64.0, "fat": 58.0, "carbs": 34.0},
+    "콜라": {"kcal": 108.0, "protein": 0.0, "fat": 0.0, "carbs": 27.0},  # per 250ml
+    "라면": {"kcal": 500.0, "protein": 10.0, "fat": 16.0, "carbs": 79.0},
+    "쌀밥": {"kcal": 300.0, "protein": 5.7, "fat": 0.5, "carbs": 67.0},
+    "비빔밥": {"kcal": 550.0, "protein": 19.0, "fat": 13.0, "carbs": 88.0},
+    "떡국": {"kcal": 420.0, "protein": 14.0, "fat": 5.0, "carbs": 81.0},
+}
+
+PERSONA_SECRET_KEY = "COACH_PERSONA_CONTEXT"
+
+COMMON_COACH_PERSONA_FALLBACK = """
+[COMMON PERSONA]
+- Coach identity: professional fitness and nutrition coach.
+- Coaching style: warm but firm, action-focused.
+- Language: Korean honorific style only.
+
+[SAFETY]
+- Do not diagnose disease.
+- If severe warning signs are present, advise immediate medical evaluation.
+""".strip()
+
+NORTH_STAR_OBJECTIVE = (
+    "This app exists to produce measurable behavior change every day, "
+    "not just analysis or display."
+)
+
+
+def build_common_persona_context():
+    try:
+        txt = str(st.secrets.get(PERSONA_SECRET_KEY, "") or "").strip()
+        if txt:
+            return txt
+        gcp_block = st.secrets.get("gcp_service_account", {}) or {}
+        txt2 = str(gcp_block.get(PERSONA_SECRET_KEY, "") or "").strip()
+        if txt2:
+            return txt2
+    except Exception:
+        pass
+    return COMMON_COACH_PERSONA_FALLBACK
+
+
+def build_north_star_context():
+    return f"""
+[NORTH STAR]
+- {NORTH_STAR_OBJECTIVE}
+- Every section must end in concrete execution, not observation only.
+- If uncertainty exists, still provide one best next action with clear time anchoring.
+""".strip()
 
 
 
@@ -262,8 +388,24 @@ def humanize_action_text(text: str) -> str:
         out = out.replace(f"\"{k}\"", v)
         out = out.replace(k, v)
 
+    # 모델이 토큰을 변형해서 내보내는 경우까지 커버
+    loose_map = {
+        "gym quick 30": "헬스장 30분 퀵 세션(러닝+코어 중심)",
+        "gym full 120": "헬스장 2시간 풀 세션(유산소+근력)",
+        "outdoor run 60": "야외 러닝 60분(심폐 중심)",
+        "walk stairs": "걷기/계단 20분",
+        "after work main": "퇴근 후 저녁(가능할 때)",
+        "lunch micro": "점심 30분",
+    }
+    lowered = out.lower()
+    for k, v in loose_map.items():
+        if k in lowered:
+            out = re.sub(re.escape(k), v, out, flags=re.IGNORECASE)
+            lowered = out.lower()
+
     # 혹시 남는 snake_case 토큰이 있으면 보기 좋게
     out = re.sub(r"\b([a-z]+_[a-z0-9_]+)\b", lambda m: m.group(1).replace("_", " "), out)
+    out = out.replace("  ", " ").strip()
     return out
 
 
@@ -293,10 +435,64 @@ def build_dailyfive_status_text(date_key, sprint_id, df_action):
     lines.append("Rule: Mark ✅ when Action_Log contains 'DF5: task_id' or 'DF5: <title>'")
     return "\n".join(lines)
 
+
+def get_daily_five_completion(date_key, sprint_id, df_action):
+    daily_five = load_dailyfive_cache(date_key, sprint_id)
+    if not daily_five or "tasks" not in daily_five:
+        return {
+            "has_plan": False,
+            "completed": 0,
+            "total": 0,
+            "completion_rate": 0.0,
+        }
+
+    tasks = daily_five.get("tasks", []) or []
+    total = len(tasks)
+    if total == 0:
+        return {
+            "has_plan": True,
+            "completed": 0,
+            "total": 0,
+            "completion_rate": 0.0,
+        }
+
+    if df_action is None or df_action.empty or "Date" not in df_action.columns:
+        return {
+            "has_plan": True,
+            "completed": 0,
+            "total": total,
+            "completion_rate": 0.0,
+        }
+
+    today_logs = df_action[df_action["Date"] == date_key] if "Date" in df_action.columns else df_action
+    inputs = " ".join([str(x) for x in today_logs.get("User_Input", []).tolist()]) if not today_logs.empty else ""
+    inputs_up = inputs.upper().replace(" ", "")
+
+    completed = 0
+    for t in tasks:
+        tid = str(t.get("task_id", "")).upper().strip()
+        title = str(t.get("title", "")).strip().upper()
+        done = False
+        if tid and f"DF5:{tid}" in inputs_up:
+            done = True
+        elif title and ("DF5:" in inputs_up):
+            compact_title = re.sub(r"\s+", "", title)
+            if compact_title and compact_title in inputs_up:
+                done = True
+        if done:
+            completed += 1
+
+    return {
+        "has_plan": True,
+        "completed": int(completed),
+        "total": int(total),
+        "completion_rate": float(completed / total) if total > 0 else 0.0,
+    }
+
+
 def get_current_kst():
-    # 앱 전체에서 "KST 기준 시간"만 쓰도록 단일화
-    # (나머지 로직이 naive datetime을 가정하므로 tzinfo 제거)
-    return datetime.now(KST).replace(tzinfo=None)
+    # 앱 전체에서 KST aware datetime만 사용
+    return datetime.now(KST)
 
 def normalize_context_for_cache(context_str):
     import re
@@ -356,8 +552,8 @@ def get_active_mission():
             if row['Status'] == '진행중':
                 return {
                     'mission_id': row['Mission_ID'], 'name': row['Name'],
-                    'start_date': datetime.strptime(row['Start_Date'], '%Y-%m-%d'),
-                    'end_date': datetime.strptime(row['End_Date'], '%Y-%m-%d'),
+                    'start_date': datetime.strptime(row['Start_Date'], '%Y-%m-%d').replace(tzinfo=KST),
+                    'end_date': datetime.strptime(row['End_Date'], '%Y-%m-%d').replace(tzinfo=KST),
                     'start_weight': float(row['Start_Wt']), 'target_weight': float(row['Target_Wt']),
                     'daily_calories': int(row['Daily_Cal'])
                 }
@@ -382,6 +578,243 @@ def get_mission_rules(mission_id):
         return rules
     except:
         return {}
+
+SPRINT_DAILY_TASKS_DEFAULT_HEADERS = [
+    "Date", "Sprint_ID", "Task_ID", "Category", "Priority",
+    "Title", "Description", "Why", "Urgency_Level", "Daily_Message", "Today_Training_Mode", "Created_At",
+]
+
+DAILY_SPRINT_PROGRESS_DEFAULT_HEADERS = [
+    "Date", "Sprint_ID", "Completed", "Total", "Completion_Rate",
+    "XC_Value_KG", "Urgency_Level", "Pace_Status", "Weight_Current",
+    "Trend_Weight", "Summary_JSON", "Updated_At",
+]
+
+
+def _safe_int(v, default=0):
+    try:
+        return int(float(v))
+    except:
+        return default
+
+
+def _safe_float(v, default=0.0):
+    try:
+        return float(v)
+    except:
+        return default
+
+
+def _get_or_init_headers(sheet, default_headers):
+    try:
+        headers = [str(x).strip() for x in (sheet.row_values(1) or [])]
+        if not headers:
+            sheet.update("A1", [default_headers], value_input_option="RAW")
+            return list(default_headers)
+
+        changed = False
+        for h in default_headers:
+            if h not in headers:
+                headers.append(h)
+                changed = True
+        if changed:
+            sheet.update("A1", [headers], value_input_option="RAW")
+        return headers
+    except:
+        return list(default_headers)
+
+
+def _a1_col(idx):
+    out = ""
+    n = int(idx)
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        out = chr(65 + rem) + out
+    return out
+
+
+def _append_rows_by_headers(sheet, headers, row_dicts):
+    rows = []
+    for d in row_dicts:
+        rows.append([d.get(h, "") for h in headers])
+    if rows:
+        sheet.append_rows(rows, value_input_option="RAW")
+
+
+def load_dailyfive_from_sheet(date_key, sprint_id):
+    try:
+        records = fetch_sheet_data("Sprint_Daily_Tasks")
+        sprint_id_str = str(sprint_id)
+        rows = [
+            r for r in (records or [])
+            if str(r.get("Date", "")).strip() == str(date_key)
+            and str(r.get("Sprint_ID", "")).strip() == sprint_id_str
+        ]
+        if not rows:
+            return None
+
+        rows = sorted(rows, key=lambda x: _safe_int(x.get("Priority", 999), 999))
+        tasks = []
+        for r in rows:
+            tasks.append({
+                "task_id": str(r.get("Task_ID", "")).strip() or f"task_{len(tasks)+1}",
+                "category": str(r.get("Category", "")).strip() or "diet",
+                "priority": _safe_int(r.get("Priority", len(tasks)+1), len(tasks)+1),
+                "title": str(r.get("Title", "")).strip(),
+                "description": str(r.get("Description", "")).strip(),
+                "why": str(r.get("Why", "")).strip(),
+            })
+
+        daily_message = ""
+        urgency_level = "medium"
+        today_training_mode = ""
+        for r in rows:
+            if not daily_message and str(r.get("Daily_Message", "")).strip():
+                daily_message = str(r.get("Daily_Message", "")).strip()
+            if str(r.get("Urgency_Level", "")).strip():
+                urgency_level = str(r.get("Urgency_Level", "")).strip()
+            if not today_training_mode and str(r.get("Today_Training_Mode", "")).strip():
+                today_training_mode = str(r.get("Today_Training_Mode", "")).strip().lower()
+
+        return {
+            "tasks": tasks,
+            "daily_message": daily_message,
+            "urgency_level": urgency_level,
+            "today_training_mode": today_training_mode,
+        }
+    except Exception as e:
+        print("load dailyfive sheet error:", e)
+        return None
+
+
+def persist_dailyfive_to_sheet(date_key, sprint_id, daily_five):
+    try:
+        if not daily_five or "tasks" not in daily_five:
+            return False
+
+        sheet = get_db_connection("Sprint_Daily_Tasks")
+        headers = _get_or_init_headers(sheet, SPRINT_DAILY_TASKS_DEFAULT_HEADERS)
+
+        # 이미 해당 일자/스프린트 데이터가 있으면 중복 저장하지 않음
+        existing = fetch_sheet_data("Sprint_Daily_Tasks")
+        sprint_id_str = str(sprint_id)
+        if any(
+            str(r.get("Date", "")).strip() == str(date_key)
+            and str(r.get("Sprint_ID", "")).strip() == sprint_id_str
+            for r in (existing or [])
+        ):
+            return True
+
+        created_at = get_current_kst().strftime("%Y-%m-%d %H:%M:%S")
+        urgency = str(daily_five.get("urgency_level", "") or "")
+        msg = str(daily_five.get("daily_message", "") or "")
+        mode = str(daily_five.get("today_training_mode", "") or "").strip().lower()
+        rows = []
+        for i, task in enumerate((daily_five.get("tasks", []) or []), start=1):
+            rows.append({
+                "Date": str(date_key),
+                "Sprint_ID": sprint_id_str,
+                "Task_ID": str(task.get("task_id", "")).strip() or f"task_{i}",
+                "Category": str(task.get("category", "")).strip(),
+                "Priority": _safe_int(task.get("priority", i), i),
+                "Title": str(task.get("title", "")).strip(),
+                "Description": str(task.get("description", "")).strip(),
+                "Why": str(task.get("why", "")).strip(),
+                "Urgency_Level": urgency,
+                "Daily_Message": msg,
+                "Today_Training_Mode": mode,
+                "Created_At": created_at,
+            })
+
+        if not rows:
+            rows.append({
+                "Date": str(date_key),
+                "Sprint_ID": sprint_id_str,
+                "Task_ID": "",
+                "Category": "",
+                "Priority": "",
+                "Title": "",
+                "Description": "",
+                "Why": "",
+                "Urgency_Level": urgency,
+                "Daily_Message": msg,
+                "Today_Training_Mode": mode,
+                "Created_At": created_at,
+            })
+
+        _append_rows_by_headers(sheet, headers, rows)
+        try:
+            fetch_sheet_data.clear()
+        except:
+            pass
+        return True
+    except Exception as e:
+        print("persist dailyfive sheet error:", e)
+        return False
+
+
+def persist_daily_sprint_progress(date_key, sprint_id, daily_state, daily_five_status, sprint_progress=None):
+    try:
+        if not sprint_id:
+            return False
+        sheet = get_db_connection("Daily_Sprint_Progress")
+        headers = _get_or_init_headers(sheet, DAILY_SPRINT_PROGRESS_DEFAULT_HEADERS)
+        rows = sheet.get_all_records()
+        sprint_id_str = str(sprint_id)
+        target_row_num = None
+        for idx, r in enumerate(rows, start=2):
+            if (
+                str(r.get("Date", "")).strip() == str(date_key)
+                and str(r.get("Sprint_ID", "")).strip() == sprint_id_str
+            ):
+                target_row_num = idx
+                break
+
+        xc_obj = (daily_state or {}).get("xc", {}) or {}
+        urgency_obj = (daily_state or {}).get("urgency", {}) or {}
+        trend_obj = (daily_state or {}).get("trend", {}) or {}
+
+        row_data = {
+            "Date": str(date_key),
+            "Sprint_ID": sprint_id_str,
+            "Completed": _safe_int((daily_five_status or {}).get("completed", 0), 0),
+            "Total": _safe_int((daily_five_status or {}).get("total", 0), 0),
+            "Completion_Rate": round(_safe_float((daily_five_status or {}).get("completion_rate", 0.0), 0.0), 4),
+            "XC_Value_KG": round(_safe_float(xc_obj.get("xc_value_kg", 0.0), 0.0), 3),
+            "Urgency_Level": str(urgency_obj.get("level", "") or ""),
+            "Pace_Status": str((sprint_progress or {}).get("pace_status", "") or ""),
+            "Weight_Current": (
+                round(_safe_float((sprint_progress or {}).get("weight_current"), 0.0), 3)
+                if sprint_progress else ""
+            ),
+            "Trend_Weight": round(_safe_float(trend_obj.get("trend_weight", 0.0), 0.0), 3) if trend_obj else "",
+            "Summary_JSON": json.dumps({
+                "xc_reason": xc_obj.get("xc_reason", []),
+                "today_logs_n": len((daily_state or {}).get("today_logs", []) or []),
+                "available_slots": (daily_state or {}).get("available_slots", []),
+            }, ensure_ascii=False),
+            "Updated_At": get_current_kst().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        values = [row_data.get(h, "") for h in headers]
+        if target_row_num:
+            end_col = _a1_col(len(headers))
+            sheet.update(
+                f"A{target_row_num}:{end_col}{target_row_num}",
+                [values],
+                value_input_option="RAW"
+            )
+        else:
+            sheet.append_row(values, value_input_option="RAW")
+
+        try:
+            fetch_sheet_data.clear()
+        except:
+            pass
+        return True
+    except Exception as e:
+        print("persist sprint progress sheet error:", e)
+        return False
 
 
 BAD_FOOD_KEYS = ["야식", "라면", "치킨", "피자", "햄버거", "과자", "디저트", "빵", "떡", "면", "버거"]
@@ -410,7 +843,7 @@ def compute_day_score(date_key, df_action):
     has_bad_food = _has_any(inp_text, BAD_FOOD_KEYS)
 
     # 기록 공백 페널티(가벼움)
-    # - 하루 로그가 1개 이하이면 “방치”로 +5
+    # - 하루 로그가 1개 이하이면 방치로 +5
     low_logging = len(day) <= 1
 
     score = 0
@@ -470,8 +903,8 @@ def get_active_sprint():
                 return {
                     'sprint_id': sprint['Sprint_ID'],
                     'name': sprint['Name'],
-                    'start_date': datetime.strptime(sprint['Start_Date'], '%Y-%m-%d'),
-                    'end_date': datetime.strptime(sprint['End_Date'], '%Y-%m-%d'),
+                    'start_date': datetime.strptime(sprint['Start_Date'], '%Y-%m-%d').replace(tzinfo=KST),
+                    'end_date': datetime.strptime(sprint['End_Date'], '%Y-%m-%d').replace(tzinfo=KST),
                     'duration_days': int(sprint['Duration_Days']),
                     'description': sprint.get('Description', '')
                 }
@@ -499,6 +932,142 @@ def get_sprint_goals(sprint_id):
     except Exception as e:
         print(f"Error getting sprint goals: {e}")
         return {}
+
+
+def _safe_parse_ymd(s):
+    try:
+        return datetime.strptime(str(s).strip(), "%Y-%m-%d").date()
+    except:
+        return None
+
+
+def _latest_weight_on_or_before(df_health, cutoff_date):
+    if df_health is None or df_health.empty:
+        return None
+    if ("Date" not in df_health.columns) or ("Weight" not in df_health.columns):
+        return None
+    df = df_health.copy()
+    df["Date_Clean"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+    df["Weight_num"] = pd.to_numeric(df["Weight"], errors="coerce")
+    df = df.dropna(subset=["Date_Clean", "Weight_num"])
+    if df.empty:
+        return None
+    if cutoff_date is not None:
+        df = df[df["Date_Clean"] <= cutoff_date]
+    if df.empty:
+        return None
+    df = df.sort_values(["Date_Clean"])
+    return float(df.iloc[-1]["Weight_num"])
+
+
+def auto_close_ended_sprints():
+    """
+    종료일이 지난 active sprint를 done으로 자동 전환하고,
+    목표 달성 여부(success/fail)를 Sprints 시트에 기록한다.
+    """
+    try:
+        sh_s = get_db_connection("Sprints")
+        sh_h = get_db_connection("Health_Log")
+        sh_g = get_db_connection("Sprint_Goals")
+    except Exception as e:
+        print("auto close sprint: sheet open error:", e)
+        return 0
+
+    try:
+        headers = [str(x).strip() for x in (sh_s.row_values(1) or [])]
+        if not headers:
+            return 0
+
+        required_extra = ["Result", "Final_Wt", "Closed_At"]
+        changed_header = False
+        for c in required_extra:
+            if c not in headers:
+                headers.append(c)
+                changed_header = True
+        if changed_header:
+            sh_s.update("A1", [headers], value_input_option="RAW")
+
+        col_idx = {h: i + 1 for i, h in enumerate(headers)}
+        if "Status" not in col_idx or "End_Date" not in col_idx or "Sprint_ID" not in col_idx:
+            return 0
+
+        rows = sh_s.get_all_records()
+        if not rows:
+            return 0
+
+        goals_raw = pd.DataFrame(sh_g.get_all_records())
+        target_by_sprint = {}
+        if not goals_raw.empty and ("Metric_Type" in goals_raw.columns):
+            g = goals_raw.copy()
+            g["Metric_Type"] = g["Metric_Type"].astype(str).str.strip().str.lower()
+            g = g[g["Metric_Type"] == "weight"]
+            for _, r in g.iterrows():
+                sid = str(r.get("Sprint_ID", "")).strip()
+                if not sid:
+                    continue
+                tgt = _safe_float(r.get("Target_Value"), None)
+                if tgt is not None:
+                    target_by_sprint[sid] = float(tgt)
+
+        df_health = pd.DataFrame(sh_h.get_all_records())
+        today_kst = get_current_kst().date()
+        now_str = get_current_kst().strftime("%Y-%m-%d %H:%M:%S")
+
+        updated = 0
+        for row_num, r in enumerate(rows, start=2):
+            status = str(r.get("Status", "")).strip().lower()
+            if status != "active":
+                continue
+
+            end_date = _safe_parse_ymd(r.get("End_Date", ""))
+            if not end_date:
+                continue
+            if today_kst <= end_date:
+                continue
+
+            sprint_id = str(r.get("Sprint_ID", "")).strip()
+            target_wt = target_by_sprint.get(sprint_id)
+            final_wt = _latest_weight_on_or_before(df_health, end_date)
+
+            if (target_wt is not None) and (final_wt is not None):
+                result = "success" if final_wt <= target_wt else "fail"
+            else:
+                result = "unknown"
+
+            try:
+                sh_s.update_cell(row_num, col_idx["Status"], "done")
+                sh_s.update_cell(row_num, col_idx["Result"], result)
+                sh_s.update_cell(row_num, col_idx["Final_Wt"], f"{final_wt:.1f}" if final_wt is not None else "")
+                sh_s.update_cell(row_num, col_idx["Closed_At"], now_str)
+                updated += 1
+            except Exception as e:
+                print("auto close sprint: update row error:", e)
+
+        if updated > 0:
+            try:
+                fetch_sheet_data.clear()
+                get_active_sprint.clear()
+                get_sprint_goals.clear()
+            except:
+                pass
+        return updated
+    except Exception as e:
+        print("auto close sprint error:", e)
+        return 0
+
+
+def run_daily_sprint_rollover_once():
+    """
+    같은 날짜에는 한 번만 자동 종료 판정을 수행한다.
+    """
+    try:
+        today_key = get_current_kst().strftime("%Y-%m-%d")
+        if st.session_state.get("_sprint_rollover_checked_date") == today_key:
+            return 0
+        st.session_state["_sprint_rollover_checked_date"] = today_key
+        return auto_close_ended_sprints()
+    except:
+        return 0
 
 def ewma(values, alpha=0.35):
     vals = [v for v in values if v is not None]
@@ -564,7 +1133,9 @@ def calculate_sprint_progress(sprint, current_weight, trend_weight=None):
 
     try:
         now = get_current_kst()
-        days_passed = max(0, (now - sprint['start_date']).days)
+        sprint_days = max(1, int(sprint.get('duration_days', 1)))
+        days_passed_raw = max(0, (now - sprint['start_date']).days)
+        days_passed = min(days_passed_raw, sprint_days)
         days_remaining = max(0, (sprint['end_date'] - now).days)
 
         goals = get_sprint_goals(sprint['sprint_id'])
@@ -573,7 +1144,7 @@ def calculate_sprint_progress(sprint, current_weight, trend_weight=None):
 
         weight_goal = goals['weight']
         total_loss = weight_goal['start_value'] - weight_goal['target_value']
-        daily_target = total_loss / sprint['duration_days']
+        daily_target = total_loss / sprint_days
         expected_weight = weight_goal['start_value'] - (daily_target * days_passed)
 
         pace_weight = trend_weight if (trend_weight is not None) else current_weight
@@ -591,9 +1162,9 @@ def calculate_sprint_progress(sprint, current_weight, trend_weight=None):
 
         return {
             'sprint': sprint,
-            'day': days_passed + 1,
+            'day': min(sprint_days, days_passed + 1),
             'days_remaining': days_remaining,
-            'progress_pct': (days_passed / sprint['duration_days']) * 100,
+            'progress_pct': (days_passed / sprint_days) * 100,
             'weight_start': weight_goal['start_value'],
             'weight_target': weight_goal['target_value'],
             'weight_current': current_weight,
@@ -610,14 +1181,13 @@ def calculate_sprint_progress(sprint, current_weight, trend_weight=None):
         print(f"Error calculating sprint progress: {e}")
         return None
 
-def compute_xw_for_date(date_key, sprint, current_weight, trend_weight=None, available_slots=None):
-    """
-    xW_push(기대체중, 채찍선):
-    - 선형 기대선(linear_expected)보다 항상 같거나 더 낮게(더 공격적으로) 설정
-    - 매일 아침 1회 생성되어 하루 고정
-    """
+def get_or_create_daily_xc(date_key, sprint, daily_state):
     if not sprint:
         return None
+
+    cached = load_xc_cache(date_key, sprint["sprint_id"])
+    if cached and cached.get("xc_value_kg") is not None:
+        return cached
 
     goals = get_sprint_goals(sprint["sprint_id"])
     if "weight" not in goals:
@@ -626,75 +1196,33 @@ def compute_xw_for_date(date_key, sprint, current_weight, trend_weight=None, ava
     weight_goal = goals["weight"]
     total_loss = weight_goal["start_value"] - weight_goal["target_value"]
     daily_target = total_loss / sprint["duration_days"]
+    xc_state = dict(daily_state or {})
+    slots_raw = list((daily_state or {}).get("available_slots", []) or [])
+    slots_for_xc = []
+    for s in slots_raw:
+        ss = dict(s)
+        reason = str(ss.get("reason_disabled") or "")
+        # xC는 아침 1회 기준치이므로, 시간 경과로만 막힌 슬롯은 복원해 계산한다.
+        if (not bool(ss.get("enabled"))) and (
+            ("11시 이후" in reason) or ("21:00 이후" in reason) or ("해당 날짜는 이미 종료" in reason)
+        ):
+            ss["enabled"] = True
+            ss["reason_disabled"] = ""
+        slots_for_xc.append(ss)
+    xc_state["available_slots"] = slots_for_xc
+    xc = compute_xc(daily_target, xc_state)
 
-    now_kst = get_current_kst()
-    days_passed = max(0, (now_kst - sprint["start_date"]).days)
-
-    # 1) 선형 기대선
-    linear_expected = weight_goal["start_value"] - (daily_target * days_passed)
-
-    # 2) 페이스 판단은 trend 우선(없으면 current)
-    pace_weight = trend_weight if (trend_weight is not None) else current_weight
-    delta_vs_linear = pace_weight - linear_expected  # +면 뒤처짐, -면 앞섬
-
-    # 3) 패널티 계산
-    penalty = XW_PENALTY_BASE
-
-    # 뒤처질수록 채찍 추가 (단, 너무 크게는 하지 말자)
-    if delta_vs_linear > 0.20:
-        penalty += XW_BEHIND_BONUS
-    elif delta_vs_linear > 0.05:
-        penalty += (XW_BEHIND_BONUS * 0.5)
-
-    # 주말 보너스(주말은 변명 금지)
-    dt = datetime.strptime(date_key, "%Y-%m-%d")
-    if dt.weekday() >= 5:
-        penalty += XW_WEEKEND_BONUS
-
-    # 운동 슬롯이 “전부 막힘”이면(=운동으로 만회 불가) 식단으로 더 조여야 하니 penalty 추가
-    if available_slots:
-        any_workout_enabled = any(
-            s.get("enabled") and any(t in (s.get("allowed_types") or []) for t in ["gym_full_120", "outdoor_run_60", "gym_quick_30", "walk_stairs", "tennis_90"])
-            for s in available_slots
-        )
-        if not any_workout_enabled:
-            penalty += XW_NO_WORKOUT_SLOT_BONUS
-
-    # 상한
-    penalty = min(XW_PENALTY_MAX, max(0.0, penalty))
-
-    xw_push = linear_expected - penalty
-
-    return {
-        "xw_weight": float(xw_push),
-        "method": "linear_minus_penalty",
-        "linear_expected": float(linear_expected),
-        "penalty_kg": float(penalty),
-        "delta_vs_linear_pace": float(delta_vs_linear),
+    computed = {
+        "xc_value_kg": float(xc["xc_value_kg"]),
+        "xc_reason": xc["xc_reason"],
         "daily_target": float(daily_target),
-        "days_passed": int(days_passed),
-        "pace_weight_used": float(pace_weight),
+        "date_key": date_key,
+        "sprint_id": sprint["sprint_id"],
+        "computed_at_kst": get_current_kst().strftime("%Y-%m-%d %H:%M:%S"),
     }
-
-
-def get_or_create_daily_xw(date_key, sprint, current_weight, trend_weight=None, available_slots=None):
-    if not sprint:
-        return None
-
-    cached = load_xw_cache(date_key, sprint["sprint_id"])
-    if cached and cached.get("xw_weight") is not None:
-        return cached
-
-    computed = compute_xw_for_date(date_key, sprint, current_weight, trend_weight=trend_weight, available_slots=available_slots)
-    if computed and computed.get("xw_weight") is not None:
-        computed["computed_at_kst"] = get_current_kst().strftime("%Y-%m-%d %H:%M:%S")
-        computed["date_key"] = date_key
-        computed["sprint_id"] = sprint["sprint_id"]
-        save_xw_cache(date_key, sprint["sprint_id"], computed)
-        clear_old_caches()
-        return computed
-
-    return None
+    save_xc_cache(date_key, sprint["sprint_id"], computed)
+    clear_old_caches()
+    return computed
 
 
 
@@ -719,7 +1247,7 @@ def _safe_parse_event_dt(v):
     except:
         return None
 
-def get_today_calendar_events():
+def get_today_calendar_events(date_key=None):
     """
     반환 형태:
     {
@@ -728,14 +1256,21 @@ def get_today_calendar_events():
     }
     """
     try:
-        creds = service_account.Credentials.from_json_keyfile_dict(
+        creds = service_account.Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
-            ['https://www.googleapis.com/auth/calendar.readonly']
+            scopes=['https://www.googleapis.com/auth/calendar.readonly']
         )
         service = build('calendar', 'v3', credentials=creds)
 
-        now_kst = datetime.now(KST)
-        start_kst = datetime.combine(now_kst.date(), time(0, 0), tzinfo=KST)
+        if date_key:
+            try:
+                target_date = datetime.strptime(date_key, "%Y-%m-%d").date()
+            except Exception:
+                target_date = get_current_kst().date()
+        else:
+            target_date = get_current_kst().date()
+
+        start_kst = datetime.combine(target_date, time(0, 0), tzinfo=KST)
         end_kst = start_kst + timedelta(days=1)
 
         timeMin = start_kst.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00", "Z")
@@ -793,6 +1328,7 @@ def build_available_slots(date_key, cal_evts):
 
     now_kst = get_current_kst()  # ✅ 현재 시각
     lunch_plan_cutoff = time(11, 0)  # ✅ 11시 넘으면 점심계획 포기
+    day_wrapup_cutoff = time(DAY_WRAPUP_START_HOUR, DAY_WRAPUP_START_MIN)  # ✅ 21시 이후 신규 제안 차단
 
     # windows (KST aware)
     day_start = datetime.combine(dt.date(), time(0,0), tzinfo=KST)
@@ -811,9 +1347,22 @@ def build_available_slots(date_key, cal_evts):
                 return True
         return False
 
-    lunch_blocked = has_termin_overlap(lunch_start, lunch_end)
-    lunch_too_late = (now_kst.date() == dt.date()) and (now_kst.time() >= lunch_plan_cutoff)
-    evening_blocked = has_termin_overlap(evening_start, evening_end)
+    # tag-based forced blocking
+    lunch_tagged = False
+    dinner_tagged = False
+    for e in termin_events:
+        title = str(e.get("title", "") or "")
+        t = re.sub(r"\s+", "", title)
+        if ("점심" in t) or ("점:" in t) or t.startswith("점"):
+            lunch_tagged = True
+        if ("저녁" in t) or ("저:" in t) or t.startswith("저"):
+            dinner_tagged = True
+
+    is_past_date = now_kst.date() > dt.date()
+    lunch_blocked = has_termin_overlap(lunch_start, lunch_end) or lunch_tagged
+    lunch_too_late = is_past_date or ((now_kst.date() == dt.date()) and (now_kst.time() >= lunch_plan_cutoff))
+    evening_blocked = has_termin_overlap(evening_start, evening_end) or dinner_tagged
+    day_wrapup_mode = is_past_date or ((now_kst.date() == dt.date()) and (now_kst.time() >= day_wrapup_cutoff))
 
     slots = []
 
@@ -827,7 +1376,8 @@ def build_available_slots(date_key, cal_evts):
             "allowed_types": ["walk_stairs", "gym_quick_30"],
             "notes": "이동 15분+샤워 30분 고려 시 운동 30분만 가능",
             "reason_disabled": 
-                ("점심시간 일정(Termin)으로 막힘" if lunch_blocked else
+                ("점심 태그/점심시간 일정(Termin)으로 막힘" if lunch_blocked else
+                "해당 날짜는 이미 종료되어 신규 제안을 차단" if is_past_date else
                 "11시 이후라 점심시간 계획은 폐기" if lunch_too_late else
             ""
         )
@@ -837,10 +1387,14 @@ def build_available_slots(date_key, cal_evts):
             "label": "저녁 메인",
             "start": "19:00",
             "end": "23:59",
-            "enabled": (not evening_blocked),
+            "enabled": (not evening_blocked) and (not day_wrapup_mode),
             "allowed_types": ["gym_full_120", "outdoor_run_60"],
-            "notes": "저녁 약속이 있으면 불가(일부 가능 없음)",
-            "reason_disabled": "19:00~23:59 일정(Termin)과 겹쳐서 저녁 운동 불가" if evening_blocked else ""
+            "notes": "저녁 약속 또는 21:00 이후에는 신규 운동 제안 불가(일부 가능 없음)",
+            "reason_disabled":
+                ("저녁 태그 또는 19:00~23:59 일정(Termin)과 겹쳐서 저녁 운동 불가" if evening_blocked else
+                 "해당 날짜는 이미 종료되어 신규 제안을 차단" if is_past_date else
+                 "21:00 이후에는 하루 마무리 모드로 전환되어 신규 운동 제안을 차단" if day_wrapup_mode else
+                 "")
         })
     else:
         # 주말은 일단 여유 슬롯 1개(필요 최소)
@@ -849,10 +1403,13 @@ def build_available_slots(date_key, cal_evts):
             "label": "주말 메인",
             "start": "09:00",
             "end": "21:00",
-            "enabled": True,
+            "enabled": not day_wrapup_mode,
             "allowed_types": ["gym_full_120", "outdoor_run_60", "tennis_90"],
-            "notes": "주말은 기본 운동 가능",
-            "reason_disabled": ""
+            "notes": "주말도 21:00 이후에는 신규 운동 제안 대신 마무리 코칭",
+            "reason_disabled":
+                ("해당 날짜는 이미 종료되어 신규 제안을 차단" if is_past_date else
+                 "21:00 이후에는 하루 마무리 모드로 전환되어 신규 운동 제안을 차단" if day_wrapup_mode else
+                 "")
         })
 
     return slots
@@ -863,6 +1420,672 @@ def slots_to_compact_text(slots):
     for s in slots:
         ok = "ENABLED" if s["enabled"] else "DISABLED"
         lines.append(f"- {s['slot_id']}({s['start']}-{s['end']}): {ok} | {','.join(s['allowed_types'])}")
+    return "\n".join(lines)
+
+
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def get_phase(now_kst):
+    h = now_kst.hour
+    if h < 10:
+        return "morning"
+    if h < 13:
+        return "midday"
+    if h < 18:
+        return "afternoon"
+    if h < 21:
+        return "evening"
+    return "night"
+
+
+def _parse_hhmm(t):
+    try:
+        hh, mm = str(t).split(":")
+        return int(hh), int(mm)
+    except:
+        return None, None
+
+
+def _meal_bucket_by_time(action_time):
+    hh, _ = _parse_hhmm(action_time)
+    if hh is None:
+        return None
+    if hh < 11:
+        return "breakfast"
+    if hh < 16:
+        return "lunch"
+    return "dinner"
+
+
+def summarize_day_logs(df_action, date_key):
+    out = {
+        "breakfast_done": False,
+        "lunch_done": False,
+        "dinner_done": False,
+        "last_meal_time": None,
+        "worked_out_today": False,
+        "workout_minutes_today": 0,
+        "kcal_est_today": 0,
+        "meals_count_today": 0,
+        "today_logs": [],
+    }
+    if df_action is None or df_action.empty or "Date" not in df_action.columns:
+        return out
+
+    day = df_action[df_action["Date"] == date_key].copy()
+    if day.empty:
+        return out
+
+    if "Action_Time" in day.columns:
+        day = day.sort_values("Action_Time")
+
+    last_meal_minutes = -1
+    for _, r in day.iterrows():
+        action_time = str(r.get("Action_Time", "") or "")
+        category = str(r.get("Category", "") or "")
+        user_input = str(r.get("User_Input", "") or "")
+
+        out["today_logs"].append(f"[{action_time}] {category}: {user_input}")
+
+        if "운동" in category:
+            out["worked_out_today"] = True
+            try:
+                js = json.loads(r.get("AI_Analysis_JSON", "{}") or "{}")
+                out["workout_minutes_today"] += int(js.get("time", js.get("duration", 0)) or 0)
+            except:
+                pass
+
+        if "섭취" in category:
+            out["meals_count_today"] += 1
+            try:
+                js = json.loads(r.get("AI_Analysis_JSON", "{}") or "{}")
+                out["kcal_est_today"] += int(js.get("calories", 0) or 0)
+            except:
+                pass
+
+            bucket = _meal_bucket_by_time(action_time)
+            if bucket == "breakfast":
+                out["breakfast_done"] = True
+            elif bucket == "lunch":
+                out["lunch_done"] = True
+            elif bucket == "dinner":
+                out["dinner_done"] = True
+
+            hh, mm = _parse_hhmm(action_time)
+            if hh is not None:
+                mins = hh * 60 + (mm or 0)
+                if mins >= last_meal_minutes:
+                    last_meal_minutes = mins
+                    out["last_meal_time"] = action_time
+
+    return out
+
+
+def summarize_day_facts(df_action, day_key):
+    y = summarize_day_logs(df_action, day_key)
+    alcohol = False
+    if df_action is not None and (not df_action.empty) and ("Date" in df_action.columns):
+        day = df_action[df_action["Date"] == day_key]
+        if not day.empty and "Category" in day.columns:
+            alcohol = day["Category"].astype(str).str.contains("음주", na=False).any()
+    return {
+        "worked_out": bool(y["worked_out_today"]),
+        "kcal_est": int(y["kcal_est_today"]),
+        "alcohol": bool(alcohol),
+    }
+
+
+def summarize_yesterday(df_action, yesterday_key):
+    facts = summarize_day_facts(df_action, yesterday_key)
+    return {
+        "worked_out_yesterday": bool(facts["worked_out"]),
+        "kcal_est_yesterday": int(facts["kcal_est"]),
+        "alcohol_yesterday": bool(facts["alcohol"]),
+    }
+
+
+def summarize_yesterday_workout_review(df_action, date_key):
+    yesterday_key = (datetime.strptime(date_key, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    out = {
+        "date": yesterday_key,
+        "had_workout": False,
+        "workout_count": 0,
+        "total_minutes": 0,
+        "intensity_hint": "none",
+        "focus_tags": [],
+        "exercise_logs": [],
+    }
+    if df_action is None or df_action.empty or "Date" not in df_action.columns:
+        return out
+
+    day = df_action[df_action["Date"] == yesterday_key].copy()
+    if day.empty:
+        return out
+    if "Action_Time" in day.columns:
+        day = day.sort_values("Action_Time")
+
+    focus = set()
+    for _, r in day.iterrows():
+        category = str(r.get("Category", "") or "")
+        if "운동" not in category:
+            continue
+        out["had_workout"] = True
+        out["workout_count"] += 1
+
+        action_time = str(r.get("Action_Time", "") or "")
+        user_input = str(r.get("User_Input", "") or "")
+        if user_input:
+            out["exercise_logs"].append(f"[{action_time}] {user_input}")
+
+        try:
+            js = json.loads(r.get("AI_Analysis_JSON", "{}") or "{}")
+            out["total_minutes"] += int(js.get("time", js.get("duration", 0)) or 0)
+        except:
+            pass
+
+        t = user_input.lower()
+        if any(k in t for k in ["3대", "스쿼트", "벤치", "데드", "웨이트", "근력"]):
+            focus.add("strength")
+        if any(k in t for k in ["하이록스", "인터벌", "러닝", "유산소", "싸이클"]):
+            focus.add("conditioning")
+        if any(k in t for k in ["플랭크", "코어", "크리스 크로스", "크런치"]):
+            focus.add("core")
+        if any(k in t for k in ["스트레칭", "요가", "사우나", "회복"]):
+            focus.add("recovery")
+
+    out["focus_tags"] = sorted(focus)
+    out["exercise_logs"] = out["exercise_logs"][:4]
+
+    total_minutes = int(out["total_minutes"] or 0)
+    if not out["had_workout"]:
+        out["intensity_hint"] = "none"
+    elif total_minutes >= 120:
+        out["intensity_hint"] = "high"
+    elif total_minutes >= 60:
+        out["intensity_hint"] = "medium"
+    else:
+        out["intensity_hint"] = "low"
+    return out
+
+
+def infer_training_mode(yesterday_workout_review, available_slots):
+    y = yesterday_workout_review or {}
+    enabled_slots = [s for s in (available_slots or []) if s.get("enabled")]
+    enabled_count = len(enabled_slots)
+
+    if not y.get("had_workout", False):
+        return "push" if enabled_count >= 1 else "build"
+
+    hint = str(y.get("intensity_hint", "none") or "none").lower()
+    if hint == "high":
+        return "recovery"
+    if hint == "medium":
+        return "build"
+    return "push" if enabled_count >= 2 else "build"
+
+
+def summarize_recent_backlog(df_action, date_key):
+    d1 = (datetime.strptime(date_key, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    d2 = (datetime.strptime(date_key, "%Y-%m-%d") - timedelta(days=2)).strftime("%Y-%m-%d")
+    f1 = summarize_day_facts(df_action, d1)
+    f2 = summarize_day_facts(df_action, d2)
+
+    overeat_days = int((f1["kcal_est"] >= 2200) + (f2["kcal_est"] >= 2200))
+    no_workout_days = int((not f1["worked_out"]) + (not f2["worked_out"]))
+    alcohol_days = int(f1["alcohol"] + f2["alcohol"])
+
+    return {
+        "kcal_yesterday": int(f1["kcal_est"]),
+        "kcal_d2": int(f2["kcal_est"]),
+        "overeat_days_last2": int(overeat_days),
+        "no_workout_days_last2": int(no_workout_days),
+        "alcohol_days_last2": int(alcohol_days),
+    }
+
+
+def extract_calendar_flags(date_key, cal_evts):
+    dt = datetime.strptime(date_key, "%Y-%m-%d").replace(tzinfo=KST)
+    lunch_start = dt.replace(hour=11, minute=30)
+    lunch_end = dt.replace(hour=13, minute=0)
+    dinner_start = dt.replace(hour=19, minute=0)
+    dinner_end = dt.replace(hour=23, minute=59)
+
+    lunch_overlap = False
+    dinner_overlap = False
+    lunch_tag = False
+    dinner_tag = False
+
+    for e in (cal_evts.get("Termin", []) or []):
+        title = str(e.get("title", "") or "")
+        title_compact = re.sub(r"\s+", "", title.lower())
+        es = e.get("start_dt")
+        ee = e.get("end_dt")
+        if es is not None and ee is not None:
+            if _overlaps(es, ee, lunch_start, lunch_end):
+                lunch_overlap = True
+            if _overlaps(es, ee, dinner_start, dinner_end):
+                dinner_overlap = True
+
+        if ("점심" in title_compact) or ("점:" in title_compact) or title_compact.startswith("점"):
+            lunch_tag = True
+        if ("저녁" in title_compact) or ("저:" in title_compact) or title_compact.startswith("저"):
+            dinner_tag = True
+
+    return {
+        "lunch_appointment": bool(lunch_overlap or lunch_tag),
+        "dinner_appointment": bool(dinner_overlap or dinner_tag),
+    }
+
+
+def compute_xc(daily_target, daily_state):
+    """
+    xC: 오늘 달성해야 할 목표 변화량(kg)
+    - 아침 1회 생성 후 하루 고정되는 '메이크업 타깃'
+    - 어제 미이행/과섭취는 오늘 xC를 상향
+    - 일정/컨디션 제약은 현실 범위로 하향
+    - final: clamp(base + adjustments, XC_MIN_KG, XC_MAX_KG)
+    """
+    baseline = float(globals().get("XC_BASELINE_KG", 0.30))
+    xc_min = float(globals().get("XC_MIN_KG", -0.20))
+    xc_max = float(globals().get("XC_MAX_KG", 0.50))
+    w = globals().get("XC_ADJ", {}) or {}
+
+    raw_target = float(daily_target) if daily_target is not None else baseline
+    base_xc = clamp(max(raw_target, baseline), 0.10, 0.45)
+    adj = 0.0
+    reasons = [f"base_from_daily_target={base_xc:.2f}"]
+
+    ys = daily_state.get("yesterday_summary", {}) or {}
+    rb = daily_state.get("recent_backlog", {}) or {}
+    cf = daily_state.get("calendar_flags", {}) or {}
+    slots = daily_state.get("available_slots", []) or []
+    sprint_state = daily_state.get("sprint", {}) or {}
+    bio = daily_state.get("bio_signal", {}) or {}
+
+    if not ys.get("worked_out_yesterday", False):
+        v = float(w.get("yesterday_no_workout", 0.08))
+        adj += v
+        reasons.append(f"+{v:.2f}:yesterday_no_workout_makeup")
+
+    ykcal = int(ys.get("kcal_est_yesterday", 0) or 0)
+    if ykcal >= 2600:
+        v = float(w.get("yesterday_kcal_very_high", 0.10))
+        adj += v
+        reasons.append(f"+{v:.2f}:yesterday_high_kcal_makeup")
+    elif ykcal >= 2200:
+        v = float(w.get("yesterday_kcal_mid_high", 0.06))
+        adj += v
+        reasons.append(f"+{v:.2f}:yesterday_mid_high_kcal_makeup")
+
+    if ys.get("alcohol_yesterday", False):
+        v = float(w.get("yesterday_alcohol", 0.06))
+        adj += v
+        reasons.append(f"+{v:.2f}:yesterday_alcohol_makeup")
+
+    if int(rb.get("overeat_days_last2", 0) or 0) >= 2:
+        v = float(w.get("streak_overeat_2d", 0.05))
+        adj += v
+        reasons.append(f"+{v:.2f}:overeat_two_day_streak")
+    if int(rb.get("no_workout_days_last2", 0) or 0) >= 2:
+        v = float(w.get("streak_no_workout_2d", 0.05))
+        adj += v
+        reasons.append(f"+{v:.2f}:no_workout_two_day_streak")
+    if int(rb.get("alcohol_days_last2", 0) or 0) >= 2:
+        v = float(w.get("streak_alcohol_2d", 0.04))
+        adj += v
+        reasons.append(f"+{v:.2f}:alcohol_two_day_streak")
+
+    pace_status = str(sprint_state.get("pace_status") or "")
+    weight_delta = float(sprint_state.get("weight_delta") or 0.0)
+    if pace_status == "behind":
+        v = float(w.get("sprint_behind", 0.06))
+        adj += v
+        reasons.append(f"+{v:.2f}:sprint_behind")
+        if weight_delta >= 0.6:
+            v2 = float(w.get("sprint_far_behind", 0.04))
+            adj += v2
+            reasons.append(f"+{v2:.2f}:sprint_far_behind")
+    elif pace_status == "ahead":
+        v = float(w.get("sprint_ahead_relief", -0.04))
+        adj += v
+        reasons.append(f"{v:+.2f}:sprint_ahead_relief")
+
+    enabled_count = sum(1 for s in slots if s.get("enabled"))
+    after_work_open = _slot_enabled(slots, "after_work_main")
+    lunch_open = _slot_enabled(slots, "lunch_micro")
+
+    if after_work_open and not cf.get("dinner_appointment", False):
+        v = float(w.get("slot_evening_open_push", 0.10))
+        adj += v
+        reasons.append(f"+{v:.2f}:evening_slot_open_push")
+    elif lunch_open:
+        v = float(w.get("slot_lunch_open_push", 0.04))
+        adj += v
+        reasons.append(f"+{v:.2f}:lunch_slot_open_push")
+
+    if enabled_count == 0:
+        v = float(w.get("slot_no_enabled_reality", -0.22))
+        adj += v
+        reasons.append(f"{v:+.2f}:no_enabled_slot_reality")
+    elif enabled_count == 1:
+        v = float(w.get("slot_single_enabled_reality", -0.08))
+        adj += v
+        reasons.append(f"{v:+.2f}:single_slot_reality")
+
+    hrv = bio.get("hrv")
+    rhr = bio.get("rhr")
+    try:
+        hrv = float(hrv) if hrv is not None else None
+    except:
+        hrv = None
+    try:
+        rhr = float(rhr) if rhr is not None else None
+    except:
+        rhr = None
+
+    severe_bio = False
+    if hrv is not None:
+        if hrv <= 30:
+            v = float(w.get("bio_very_low_hrv", -0.10))
+            adj += v
+            severe_bio = True
+            reasons.append(f"{v:+.2f}:very_low_hrv_safety")
+        elif hrv <= 34:
+            v = float(w.get("bio_low_hrv", -0.06))
+            adj += v
+            reasons.append(f"{v:+.2f}:low_hrv_safety")
+    if rhr is not None:
+        if rhr >= 80:
+            v = float(w.get("bio_very_high_rhr", -0.10))
+            adj += v
+            severe_bio = True
+            reasons.append(f"{v:+.2f}:very_high_rhr_safety")
+        elif rhr >= 74:
+            v = float(w.get("bio_high_rhr", -0.06))
+            adj += v
+            reasons.append(f"{v:+.2f}:high_rhr_safety")
+    if severe_bio and (hrv is not None and hrv <= 30) and (rhr is not None and rhr >= 80):
+        v = float(w.get("bio_combined_risk", -0.05))
+        adj += v
+        reasons.append(f"{v:+.2f}:combined_bio_risk")
+
+    xc = clamp(base_xc + adj, xc_min, xc_max)
+    return {
+        "xc_value_kg": float(xc),
+        "xc_reason": reasons,
+    }
+
+
+def compute_urgency(daily_state):
+    score = 0
+    reasons = []
+    xc_val = float((daily_state.get("xc", {}) or {}).get("xc_value_kg") or 0.0)
+    ys = daily_state.get("yesterday_summary", {}) or {}
+    sprint_state = daily_state.get("sprint", {}) or {}
+    slots = daily_state.get("available_slots", []) or []
+
+    if xc_val >= 0.40:
+        score += 3
+        reasons.append("+3:xc_high_push")
+    elif xc_val >= 0.32:
+        score += 2
+        reasons.append("+2:xc_mid_high_push")
+    elif xc_val < 0:
+        score += 2
+        reasons.append("+2:damage_control_day")
+
+    if not ys.get("worked_out_yesterday", False):
+        score += 2
+        reasons.append("+2:yesterday_no_workout")
+
+    ykcal = int(ys.get("kcal_est_yesterday", 0) or 0)
+    if ykcal >= 2600:
+        score += 3
+        reasons.append("+3:yesterday_kcal_very_high")
+    elif ykcal >= 2200:
+        score += 2
+        reasons.append("+2:yesterday_kcal_high")
+
+    if ys.get("alcohol_yesterday", False):
+        score += 1
+        reasons.append("+1:yesterday_alcohol")
+
+    if str(sprint_state.get("pace_status") or "") == "behind":
+        score += 2
+        reasons.append("+2:sprint_behind")
+
+    enabled_count = sum(1 for s in slots if s.get("enabled"))
+    if enabled_count == 0:
+        score += 2
+        reasons.append("+2:no_enabled_slot")
+    elif enabled_count == 1:
+        score += 1
+        reasons.append("+1:single_slot")
+
+    th = globals().get("URGENCY_THRESHOLDS", {}) or {}
+    high_th = int(th.get("high", 7))
+    medium_th = int(th.get("medium", 4))
+
+    if score >= high_th:
+        level = "high"
+    elif score >= medium_th:
+        level = "medium"
+    else:
+        level = "low"
+    return {"level": level, "score": int(score), "reason": reasons}
+
+
+def build_daily_state(
+    date_key,
+    now_kst,
+    df_action,
+    cal_evts,
+    available_slots,
+    sprint_progress=None,
+    trend_weight=None,
+    current_hrv=None,
+    current_rhr=None,
+):
+    """
+    daily_state schema (요약):
+    - date_key, now_kst, phase, late_mode
+    - calendar_flags: lunch_appointment, dinner_appointment
+    - meal_done: breakfast_done, lunch_done, dinner_done, last_meal_time
+    - workout_done: worked_out_today, workout_minutes_today
+    - intake_today: kcal_est_today, meals_count_today
+    - yesterday_summary: worked_out_yesterday, kcal_est_yesterday, alcohol_yesterday
+    - yesterday_workout_review: had_workout, total_minutes, intensity_hint, focus_tags, exercise_logs
+    - recent_backlog: 최근 2일 누적 과섭취/무운동/음주
+    - sprint: pace_status, weight_delta, required_daily_pace, daily_target
+    - bio_signal: hrv, rhr
+    - trend: trend_weight, linear_expected_weight
+    - xc: xc_value_kg, xc_reason
+    - urgency: level, score, reason
+    - available_slots, today_logs
+    """
+    yesterday_key = (datetime.strptime(date_key, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = summarize_day_logs(df_action, date_key)
+    yesterday = summarize_yesterday(df_action, yesterday_key)
+    yesterday_workout_review = summarize_yesterday_workout_review(df_action, date_key)
+    recent_backlog = summarize_recent_backlog(df_action, date_key)
+    calendar_flags = extract_calendar_flags(date_key, cal_evts)
+
+    meal_done = {
+        "breakfast_done": bool(today["breakfast_done"]),
+        "lunch_done": bool(today["lunch_done"]),
+        "dinner_done": bool(today["dinner_done"]),
+        "last_meal_time": today["last_meal_time"],
+    }
+    workout_done = {
+        "worked_out_today": bool(today["worked_out_today"]),
+        "workout_minutes_today": int(today["workout_minutes_today"]),
+    }
+    intake_today = {
+        "kcal_est_today": int(today["kcal_est_today"]),
+        "meals_count_today": int(today["meals_count_today"]),
+    }
+
+    daily_target = None
+    linear_expected_weight = None
+    if sprint_progress:
+        daily_target = sprint_progress.get("daily_target")
+        linear_expected_weight = sprint_progress.get("weight_expected")
+
+    state = {
+        "date_key": date_key,
+        "now_kst": now_kst.isoformat(),
+        "phase": get_phase(now_kst),
+        "late_mode": (now_kst.hour > LATE_MODE_START_HOUR) or (now_kst.hour == LATE_MODE_START_HOUR and now_kst.minute >= LATE_MODE_START_MIN),
+        "calendar_flags": calendar_flags,
+        "meal_done": meal_done,
+        "workout_done": workout_done,
+        "intake_today": intake_today,
+        "yesterday_summary": yesterday,
+        "yesterday_workout_review": yesterday_workout_review,
+        "recent_backlog": recent_backlog,
+        "sprint": {
+            "pace_status": (sprint_progress.get("pace_status") if sprint_progress else None),
+            "weight_delta": (float(sprint_progress.get("weight_delta")) if sprint_progress and sprint_progress.get("weight_delta") is not None else None),
+            "required_daily_pace": (float(sprint_progress.get("required_daily_pace")) if sprint_progress and sprint_progress.get("required_daily_pace") is not None else None),
+            "daily_target": (float(sprint_progress.get("daily_target")) if sprint_progress and sprint_progress.get("daily_target") is not None else None),
+        },
+        "bio_signal": {
+            "hrv": (float(current_hrv) if current_hrv is not None else None),
+            "rhr": (float(current_rhr) if current_rhr is not None else None),
+        },
+        "trend": {
+            "trend_weight": (float(trend_weight) if trend_weight is not None else None),
+            "linear_expected_weight": (float(linear_expected_weight) if linear_expected_weight is not None else None),
+        },
+        "available_slots": available_slots or [],
+        "today_logs": today["today_logs"][:10],
+    }
+    state["xc"] = compute_xc(daily_target, state)
+    state["urgency"] = compute_urgency(state)
+    return state
+
+
+def _slot_enabled(slots, slot_id):
+    for s in (slots or []):
+        if s.get("slot_id") == slot_id:
+            return bool(s.get("enabled"))
+    return False
+
+
+def _sanitize_plan_lines(text):
+    if not text:
+        return ""
+
+    cleaned = []
+    seen = set()
+    for raw in str(text).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        line = re.sub(r"\s+", " ", line)
+
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(line)
+
+    return "\n".join(cleaned).strip()
+
+
+def _enforce_evidence_quality(text, daily_state):
+    if not text:
+        return False
+    logs = daily_state.get("today_logs", []) or []
+    # 로그가 적은 날은 evidence gate를 완화한다.
+    if len(logs) < 2:
+        return True
+    log_hits = 0
+    for lg in logs:
+        if len(lg) < 8:
+            continue
+        # 로그 문장 앞부분이 포함되는지 확인
+        probe = lg[:12]
+        if probe in text:
+            log_hits += 1
+        if log_hits >= 2:
+            break
+
+    numeric_hit = bool(re.search(r"\d+(\.\d+)?\s*(kg|kcal|분|%)", text))
+    return (log_hits >= 2) and numeric_hit
+
+
+def _is_action_oriented_text(text):
+    if not text:
+        return False
+    low = str(text).lower()
+    action_markers = [
+        "실행", "고정", "차단", "기록", "준비", "시작", "마무리",
+        "하십시오", "하세요", "하십시", "must", "do now",
+    ]
+    return any(m in low for m in action_markers)
+
+
+def build_forced_next_action_from_state(daily_state):
+    slots = daily_state.get("available_slots", []) or []
+    enabled = [s for s in slots if s.get("enabled")]
+    if enabled:
+        s = enabled[0]
+        label = str(s.get("label") or s.get("slot_id") or "다음 슬롯")
+        start = str(s.get("start") or "")
+        end = str(s.get("end") or "")
+        return f"지금 확정 행동: {label}({start}-{end}) 기준으로 운동 1회를 캘린더/할 일 목록에 즉시 고정하고 실행하십시오."
+    return "지금 확정 행동: 오늘은 추가 섭취를 종료하고, 내일 첫 활성 슬롯 운동 1회를 캘린더에 즉시 고정하십시오."
+
+
+def validate_action_plan_output(result, daily_state):
+    if not isinstance(result, dict):
+        return result
+
+    text = str(result.get("next_actions", "") or "")
+    warns = str(result.get("warnings", "") or "")
+    analysis = str(result.get("current_analysis", "") or "")
+
+    text = text.replace("초저녁", "저녁")
+    warns = warns.replace("초저녁", "저녁")
+    analysis = analysis.replace("초저녁", "저녁")
+
+    text = _sanitize_plan_lines(text)
+    if not text:
+        text = "AI 응답이 비어 있습니다. 다시 생성해 주세요."
+    if not _is_action_oriented_text(text):
+        text = f"{text}\n{build_forced_next_action_from_state(daily_state)}".strip()
+
+    result["current_analysis"] = humanize_action_text(analysis)
+    result["next_actions"] = humanize_action_text(text)
+    result["warnings"] = warns.strip()
+    return result
+
+
+def format_ai_error_message(e):
+    msg = str(e or "").strip()
+    low = msg.lower()
+    if ("insufficient_quota" in low) or ("error code: 429" in low) or ("quota" in low):
+        return "OpenAI API 한도(429) 문제입니다. 결제/프로젝트 키를 확인해 주세요."
+    if ("model" in low) and (("not found" in low) or ("does not exist" in low) or ("permission" in low)):
+        return "모델 접근 권한 오류입니다. 사용 가능한 모델로 변경이 필요합니다."
+    if not msg:
+        return "AI 호출 오류가 발생했습니다."
+    return f"AI 호출 오류: {msg[:220]}"
+
+
+def build_rule_based_action_plan(daily_state):
+    lines = [
+        "AI 응답 생성에 실패했습니다. 1-2분 후 다시 생성해 주세요.",
+        f"North Star: {NORTH_STAR_OBJECTIVE}",
+        "현재 시점 의사결정은 daily_state 기준 사실 데이터로 다시 평가됩니다.",
+        build_forced_next_action_from_state(daily_state),
+    ]
+    xc = (daily_state.get("xc", {}) or {}).get("xc_value_kg")
+    if xc is not None:
+        lines.append(f"참고 지표: 오늘 xC는 {float(xc):.1f}kg 기준입니다.")
     return "\n".join(lines)
 
 
@@ -886,67 +2109,65 @@ def ai_generate_daily_five(date_key, sprint, current_status, context):
     # ✅ [FIX] calendar 원문 대신 slots만 전달
     slots = context.get("available_slots", [])
     slots_json = json.dumps(slots, ensure_ascii=False)
+    yesterday_review = context.get("yesterday_workout_review")
+    if not yesterday_review:
+        try:
+            df_action = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
+            yesterday_review = summarize_yesterday_workout_review(df_action, date_key)
+        except:
+            yesterday_review = {
+                "date": "",
+                "had_workout": False,
+                "workout_count": 0,
+                "total_minutes": 0,
+                "intensity_hint": "none",
+                "focus_tags": [],
+                "exercise_logs": [],
+            }
+    default_mode = infer_training_mode(yesterday_review, slots)
+    yesterday_review_json = json.dumps(yesterday_review, ensure_ascii=False)
+
+    persona_context = build_common_persona_context()
+    north_star_context = build_north_star_context()
 
     prompt = f"""
-You are Sprint Coach. Your ONLY job: help user achieve sprint goal.
+{persona_context}
+{north_star_context}
 
-[SPRINT MISSION]
+역할: Sprint Daily Five 에디터
+언어: 한국어
+
+[섹션 목표]
+- 2주 스프린트 달성을 위해 오늘 반드시 해야 할 핵심 5가지를 제시합니다.
+- 5개 과제는 스프린트 목표와 직접 연결되어야 합니다.
+- 우선순위, 실행성, 동기 부여를 분명하게 표현합니다.
+
+[입력 사실]
 Sprint: {sprint['name']} (Day {progress['day']}/{sprint['duration_days']})
-Goal: Lose {progress['weight_start'] - progress['weight_target']:.1f}kg in {sprint['duration_days']} days
-Current Progress: {progress['weight_start'] - progress['weight_current']:.1f}kg lost
-Expected: {progress['weight_start'] - progress['weight_expected']:.1f}kg
-Status: {"⚠️ BEHIND" if progress['pace_status'] == 'behind' else "✅ AHEAD" if progress['pace_status'] == 'ahead' else "🎯 ON TRACK"}
-
-[TODAY CONTEXT]
+Goal Loss: {progress['weight_start'] - progress['weight_target']:.1f}kg
+Current Loss: {progress['weight_start'] - progress['weight_current']:.1f}kg
+Expected Loss: {progress['weight_start'] - progress['weight_expected']:.1f}kg
+Pace: {progress['pace_status']}
 Date: {date_key} ({weekday})
-HRV: {current_status['hrv']} | RHR: {current_status['rhr']}
-Current Weight: {current_status['weight']:.1f}kg
+HRV: {current_status['hrv']} | RHR: {current_status['rhr']} | Weight: {current_status['weight']:.1f}kg
+AVAILABLE_SLOTS(JSON): {slots_json}
+YESTERDAY_WORKOUT_REVIEW(JSON): {yesterday_review_json}
+DEFAULT_TRAINING_MODE: {default_mode}
 
-[TIME-OF-DAY WORDING LOCK]
-- You MUST describe the current time as exactly one of:
-  "이른 아침", "오전", "점심 직후", "이른 오후", "늦은 오후", "저녁", "밤"
-- Map:
-  Early Morning -> 이른 아침
-  Morning -> 오전
-  Early Afternoon -> 이른 오후
-  Late Afternoon -> 늦은 오후
-  Evening -> 저녁
-  Night -> 밤
-- NEVER use "초저녁".
-
-[HARD GATE — AVAILABLE_SLOTS ONLY]
-You MUST choose actions that fit ONLY within enabled slots.
-If there is no enabled slot for workouts, you MUST NOT suggest gym/run.
-In that case, focus on diet deficit + micro activity that fits allowed_types.
-
-AVAILABLE_SLOTS(JSON):
-{slots_json}
-
-[YOUR TASK]
-Create EXACTLY 5 concrete actions that DIRECTLY cause weight loss TODAY.
-
-[CRITICAL RULES]
-✅ Only include actions that:
-1) Burn calories (workouts/cardio) BUT only if a workout slot is enabled
-2) Reduce calorie intake (specific meals, calorie limits)
-3) Control macros (protein targets, carb limits)
-4) Speak in Korean 
-
-❌ NEVER include:
-- General health: sleep, water, stress (unless sprint-critical)
-- Admin tasks: input logs, weigh-in
-- Vague goals
-
-[INTENSITY ADJUSTMENT]
-Current Status: {progress['pace_status']}
-Delta: {progress['weight_delta']:.2f}kg
+[작성 원칙]
+- available_slots 사실과 모순되지 않아야 합니다.
+- 표현과 전략은 자율적으로 구성하십시오.
+- 5개 모두 구체적이고 실행 가능한 과제로 작성하십시오.
+- 어제 운동 기록이 있으면 강점 1개 + 보완점 1개를 daily_message에 짧게 반영하십시오.
+- today_training_mode는 오늘의 기본 방향(soft anchor)으로 제시하십시오.
+- json 객체 1개만 출력하십시오.
 
 [OUTPUT FORMAT - JSON ONLY]
 {{
   "tasks": [
     {{
       "task_id": "task_1",
-      "category": "workout/diet",
+      "category": "workout/diet/recovery",
       "priority": 1,
       "title": "...",
       "description": "...",
@@ -954,7 +2175,8 @@ Delta: {progress['weight_delta']:.2f}kg
     }}
   ],
   "daily_message": "...",
-  "urgency_level": "high/medium/low"
+  "urgency_level": "high/medium/low",
+  "today_training_mode": "recovery/build/push"
 }}
 """
 
@@ -970,21 +2192,10 @@ Delta: {progress['weight_delta']:.2f}kg
             if 'task_id' not in task:
                 task['task_id'] = f"task_{i+1}"
 
-        now_kst = get_current_kst()
-        late_mode = (now_kst.hour > LATE_MODE_START_HOUR) or (now_kst.hour == LATE_MODE_START_HOUR and now_kst.minute >= LATE_MODE_START_MIN)
-
-        if late_mode:
-            ban_words = ["gym_full_120", "outdoor_run_60", "HIIT", "헬스장", "러닝 60", "트레드밀 40", "트레드밀 50"]
-            txt = (result.get("next_actions") or "")
-            if any(w in txt for w in ban_words):
-                result["warnings"] = (result.get("warnings") or "") + " / Late Mode인데 장시간 운동을 제안했습니다. 방어 모드로 재작성 필요."
-                result["next_actions"] = (
-                    "지금 시간대엔 길게 운동하는 건 현실적으로 불가능합니다.\n"
-                    "1) 지금부터는 '야식/음주 차단'이 1순위입니다: 오늘은 추가 섭취 금지(물/무가당만).\n"
-                    "2) 가능하면 10~15분만 가볍게 걷고 바로 정리하세요.\n"
-                    "3) 내일 점심 30분 운동을 '무조건 실행'으로 고정하세요(옷/신발 세팅, 알람).\n"
-                    "내일 아침 체중(xW 판정)이 오늘 밤에 결정됩니다. 여기서 더 먹으면 그대로 망합니다."
-                )
+        mode = str(result.get("today_training_mode", "") or "").strip().lower()
+        if mode not in {"recovery", "build", "push"}:
+            mode = default_mode
+        result["today_training_mode"] = mode
 
         return result
 
@@ -1006,7 +2217,7 @@ def calculate_mission_status(current_weight):
             'actual_loss': 0, 'target_loss': 0
         }
 
-    now = datetime.now()
+    now = get_current_kst()
     total_days = (mission['end_date'] - mission['start_date']).days
     days_passed = max(0, (now - mission['start_date']).days)
     days_remaining = max(0, (mission['end_date'] - now).days)
@@ -1028,8 +2239,9 @@ def validate_mission_rules(mission_id, category, user_input):
     violations = []
     if '음주' in category and 'alcohol_ban' in rules:
         ban_rule = rules['alcohol_ban']
-        if datetime.now().month == ban_rule.get('month'):
-            violations.append({'type': 'alcohol_ban', 'severity': ban_rule.get('penalty', 'warning'), 'message': f"🚫 Dry Feb 위반! {datetime.now().month}월은 금주입니다."})
+        now_kst = get_current_kst()
+        if now_kst.month == ban_rule.get('month'):
+            violations.append({'type': 'alcohol_ban', 'severity': ban_rule.get('penalty', 'warning'), 'message': f"🚫 Dry Feb 위반! {now_kst.month}월은 금주입니다."})
     return violations
 
 def analyze_patterns(df_health, df_action):
@@ -1138,22 +2350,39 @@ def ai_generate_daily_checkin(date_key, hrv, rhr, weight, morning_context, calen
     client = OpenAI(api_key=OPENAI_API_KEY)
     dt = datetime.strptime(date_key, '%Y-%m-%d')
     wc = "Workday(06-19 Work). No heavy gym during work." if dt.weekday() < 5 else "Weekend. Free."
+    persona_context = build_common_persona_context()
+    north_star_context = build_north_star_context()
 
     prompt = f"""
-Role: Dr. MBJS 28-yo Female Elite Coach). Tone: Professional, Sharp, Supportive. Language: Korean Honorifics Only.
+{persona_context}
+{north_star_context}
+
+역할: Daily Check-in 에디터
+언어: 한국어 존댓말
+
+[섹션 목표]
+- 조간신문 1면+사설처럼, 오늘 컨디션이 왜 이런지 최근 기록 기반으로 해석합니다.
+- 오늘 하루를 어떤 기조로 운영해야 하는지 큰 방향을 제시합니다.
+
+[입력 사실]
 Data: {morning_context}
 Vitals: {date_key}, HRV:{hrv}, RHR:{rhr}, Wt:{weight}
 Schedule: {calendar_str}
 Constraint: {wc}
 
+[출력 원칙]
+- 입력 사실과 모순되지 마십시오.
+- 해석과 코칭 표현은 자율적으로 구성하십시오.
+- json 객체 1개만 출력하십시오.
+
 Output JSON: {{
   "condition_signal": "Green/Yellow/Red",
-  "headline": "오늘 컨디션 한 문장 요약(매일 다르게)",
-  "headline_reason": "왜 그렇게 판단했는지 근거 1줄",
-  "analysis": "Analysis(Kor)",
-  "mission_workout": "Plan(Kor)",
-  "mission_diet": "Plan(Kor)",
-  "mission_recovery": "Plan(Kor)"
+  "headline": "오늘 컨디션 한 문장 헤드라인",
+  "headline_reason": "헤드라인 근거 1줄",
+  "analysis": "왜 이런 상태인지 설명",
+  "mission_workout": "오늘 운동 운영 기조",
+  "mission_diet": "오늘 식단 운영 기조",
+  "mission_recovery": "오늘 회복 운영 기조"
 }}
 """
     try:
@@ -1174,101 +2403,40 @@ Output JSON: {{
             "mission_recovery": "-"
         }
 
-@st.cache_data(ttl=10800)
-def ai_generate_action_plan_cached(hrv, rhr, weight, context_normalized, activities_tuple, slots_key, available_slots):
-    return ai_generate_action_plan_internal(
+@st.cache_data(ttl=900)
+def ai_generate_action_plan_cached(hrv, rhr, weight, date_key, slots_key, available_slots):
+    result = ai_generate_action_plan_internal(
         hrv, rhr, weight,
-        list(activities_tuple),
+        [],
         available_slots
     )
+    # 실패 응답은 캐시에 남기지 않는다.
+    if (result or {}).get("fallback_mode") == "ai_error":
+        raise RuntimeError("non-cacheable-action-plan-failure")
+    return result
 
 def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, available_slots):
     client = OpenAI(api_key=OPENAI_API_KEY)
     now_kst = get_current_kst()
-    late_mode = (now_kst.hour > LATE_MODE_START_HOUR) or (now_kst.hour == LATE_MODE_START_HOUR and now_kst.minute >= LATE_MODE_START_MIN)
-    weekday = now_kst.weekday()
-
-    activities_text = "\n".join([f"• {a}" for a in today_activities]) if today_activities else "아직 기록된 활동 없음"
-
-    # slots compact debug
-    slots_json = json.dumps(available_slots, ensure_ascii=False)
-
-    if weekday < 5:
-        constraint_text = """
-[CRITICAL TIME CONSTRAINTS (Weekdays)]
-- 06:00 ~ 19:00 is WORK TIME. NO GYM suggestions.
-- Lunch slot exists only if enabled.
-- After-work workout exists only if enabled.
-- There is NO partial. If after-work is disabled, do NOT suggest after-work exercise.
-"""
-    else:
-        constraint_text = "[TIME CONSTRAINTS (Weekend)] Use only enabled slots."
-
-    hour = now_kst.hour
-    if hour < 9:
-        time_of_day = "Early Morning"
-        time_remaining_desc = "Most of the day ahead"
-    elif hour < 12:
-        time_of_day = "Morning"
-        time_remaining_desc = "More than half day remaining"
-    elif hour < 15:
-        time_of_day = "Early Afternoon"
-        time_remaining_desc = "About half day remaining"
-    elif hour < 18:
-        time_of_day = "Late Afternoon"
-        time_remaining_desc = "Several hours remaining"
-    elif hour < 21:
-        time_of_day = "Evening"
-        time_remaining_desc = "Few hours remaining"
-    else:
-        time_of_day = "Night"
-        time_remaining_desc = "Day is almost over"
 
     try:
         sheet_health = get_db_connection("Health_Log")
         sheet_action = get_db_connection("Action_Log")
         df_health = pd.DataFrame(sheet_health.get_all_records())
         df_action = pd.DataFrame(sheet_action.get_all_records())
-        full_context = prepare_full_context(df_health, df_action, weight, is_morning_fixed=False)
     except:
         df_health = pd.DataFrame()
         df_action = pd.DataFrame()
-        full_context = "[Context loading failed]"
 
     date_key = get_mission_date_key()
-    yesterday_key = (datetime.strptime(date_key, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    # ----------------------------
-    # Sprint / Trend / xW / DailyFive / Lockdown
-    # ----------------------------
     sprint = None
     progress = None
-    xw_weight = None
     trend_weight = None
-    gap = None
-    lockdown_level = 0
-    today_intake = {"calories": 0, "meals": 0}
-
-    # 1) 오늘 섭취 추정치
-    try:
-        today_intake = get_today_intake_stats(df_action, date_key)
-    except:
-        today_intake = {"calories": 0, "meals": 0}
-
-    # 2) 스프린트/진행도
     try:
         sprint = get_active_sprint()
     except:
         sprint = None
 
-    sprint_started = False
-    if sprint:
-        try:
-            sprint_started = (datetime.strptime(date_key, "%Y-%m-%d").date() >= sprint["start_date"].date())
-        except:
-            sprint_started = True  # 안전하게 True로
-
-    # 3) trend / xW / gap
     if sprint and (not df_health.empty):
         try:
             trend = get_or_create_daily_trend(date_key, df_health)
@@ -1277,251 +2445,213 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
             trend_weight = None
 
         try:
-            xw = get_or_create_daily_xw(
-                date_key,
-                sprint,
-                weight,
-                trend_weight=trend_weight,
-                available_slots=available_slots
-            )
-            xw_weight = xw.get("xw_weight") if xw else None
-        except:
-            xw_weight = None
-
-        if (trend_weight is not None) and (xw_weight is not None):
-            gap = float(trend_weight) - float(xw_weight)
-
-        try:
             progress = calculate_sprint_progress(sprint, weight, trend_weight=trend_weight)
         except:
             progress = None
 
-    # 4) Daily Five 로딩/생성 (Action Plan이 참고해야 하므로 여기서 확보)
-    dailyfive_txt = "Daily Five: None"
-    dailyfive_obj = None
+    cal_evts = {"Sports": [], "Termin": []}
+    try:
+        cal_evts = get_today_calendar_events(date_key)
+    except:
+        cal_evts = {"Sports": [], "Termin": []}
 
-    if sprint and sprint_started:
+    if not available_slots:
+        available_slots = build_available_slots(date_key, cal_evts)
+
+    daily_state = build_daily_state(
+        date_key=date_key,
+        now_kst=now_kst,
+        df_action=df_action,
+        cal_evts=cal_evts,
+        available_slots=available_slots,
+        sprint_progress=progress,
+        trend_weight=trend_weight,
+        current_hrv=hrv,
+        current_rhr=rhr,
+    )
+    if sprint:
         try:
-            dailyfive_obj = load_dailyfive_cache(date_key, sprint["sprint_id"])
-            if not dailyfive_obj:
-                # available_slots는 이미 함수 인자로 들어옴
-                dailyfive_obj = ai_generate_daily_five(
-                    date_key,
-                    sprint,
-                    {"weight": weight, "hrv": hrv, "rhr": rhr},
-                    {"available_slots": available_slots},
-                )
-                if dailyfive_obj:
-                    save_dailyfive_cache(date_key, sprint["sprint_id"], dailyfive_obj)
-                    clear_old_caches()
-        except:
-            dailyfive_obj = None
+            fixed_xc = get_or_create_daily_xc(date_key, sprint, daily_state)
+            if fixed_xc and (fixed_xc.get("xc_value_kg") is not None):
+                daily_state["xc"] = {
+                    "xc_value_kg": float(fixed_xc.get("xc_value_kg")),
+                    "xc_reason": list(fixed_xc.get("xc_reason", []) or []),
+                }
+                daily_state["urgency"] = compute_urgency(daily_state)
+        except Exception:
+            pass
 
-    if dailyfive_obj and isinstance(dailyfive_obj, dict) and ("tasks" in dailyfive_obj):
-        # 모델에게 “그대로 복붙” 가능한 근거 텍스트로 제공
-        lines = ["[DAILY FIVE — TODAY]"]
-        for t in dailyfive_obj.get("tasks", [])[:7]:
-            title = str(t.get("title", "")).strip()
-            desc = str(t.get("description", "")).strip()
-            pri = t.get("priority", "")
-            lines.append(f"- (P{pri}) {title} :: {desc}")
-        if dailyfive_obj.get("urgency_level"):
-            lines.append(f"Urgency: {dailyfive_obj.get('urgency_level')}")
-        if dailyfive_obj.get("daily_message"):
-            lines.append(f"Message: {dailyfive_obj.get('daily_message')}")
-        dailyfive_txt = "\n".join(lines)
+    tomorrow_key = (datetime.strptime(date_key, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    tomorrow_slots = []
+    try:
+        tomorrow_events = get_today_calendar_events(tomorrow_key)
+        tomorrow_slots = build_available_slots(tomorrow_key, tomorrow_events)
+    except:
+        tomorrow_slots = []
+    tomorrow_enabled_slots = [s for s in (tomorrow_slots or []) if s.get("enabled")]
 
-    # 5) LOCKDOWN 결정 (조건 2개 만족 시 Level2)
-    # - gap이 큰데(>=0.7) + 오늘 이미 충분히 먹었으면(>=1200kcal or meals>=2) 저녁 차단
-    if (gap is not None) and (gap >= 0.7) and ((today_intake.get("calories", 0) >= 1200) or (today_intake.get("meals", 0) >= 2)):
-        lockdown_level = 2
-    elif (gap is not None) and (gap >= 0.3):
-        lockdown_level = 1
+    daily_five_status = {
+        "has_plan": False,
+        "completed": 0,
+        "total": 0,
+        "completion_rate": 0.0,
+    }
+    try:
+        if sprint:
+            daily_five_status = get_daily_five_completion(date_key, sprint["sprint_id"], df_action)
+    except:
+        pass
+
+    daily_five_plan = {}
+    try:
+        if sprint:
+            daily_five_plan = load_dailyfive_cache(date_key, sprint["sprint_id"]) or {}
+    except:
+        daily_five_plan = {}
+
+    try:
+        if sprint:
+            persist_daily_sprint_progress(
+                date_key=date_key,
+                sprint_id=sprint["sprint_id"],
+                daily_state=daily_state,
+                daily_five_status=daily_five_status,
+                sprint_progress=progress,
+            )
+    except:
+        pass
+
+    sprint_status = {
+        "has_sprint": bool(progress),
+        "pace_status": (progress.get("pace_status") if progress else None),
+        "weight_delta": (
+            float(progress.get("weight_delta"))
+            if progress and (progress.get("weight_delta") is not None)
+            else None
+        ),
+        "required_daily_pace": (
+            float(progress.get("required_daily_pace"))
+            if progress and (progress.get("required_daily_pace") is not None)
+            else None
+        ),
+    }
+    no_workout_today = not bool((daily_state.get("workout_done", {}) or {}).get("worked_out_today", False))
+    behind_pace = sprint_status.get("pace_status") == "behind"
+    daily_five_zero_done = bool(daily_five_status.get("has_plan")) and int(daily_five_status.get("completed", 0)) == 0
+    urgency_obj = daily_state.get("urgency", {}) or {}
+    urgency_level = str(urgency_obj.get("level") or "low")
+    xc_obj = daily_state.get("xc", {}) or {}
+    xc_value = xc_obj.get("xc_value_kg")
+    try:
+        xc_value = float(xc_value) if xc_value is not None else None
+    except:
+        xc_value = None
+    xc_inverse_day = (xc_value is not None) and (xc_value < 0)
+    xc_high_push = (xc_value is not None) and (xc_value >= 0.40)
+
+    if xc_inverse_day:
+        coaching_mode = "damage_control"
+    elif urgency_level == "high" or xc_high_push or (no_workout_today and (behind_pace or daily_five_zero_done)):
+        coaching_mode = "recovery_lockdown"
     else:
-        lockdown_level = 0
+        coaching_mode = "normal"
 
+    logs = daily_state.get("today_logs", [])
+    logs_for_prompt = logs[:6]
+    if len(logs_for_prompt) < 2:
+        logs_for_prompt.extend((today_activities or [])[: (2 - len(logs_for_prompt))])
+    logs_text = "\n".join([f"- {x}" for x in logs_for_prompt]) if logs_for_prompt else "- (기록 없음)"
+    daily_state_json = json.dumps(daily_state, ensure_ascii=False, indent=2)
+    sprint_status_json = json.dumps(sprint_status, ensure_ascii=False, indent=2)
+    daily_five_status_json = json.dumps(daily_five_status, ensure_ascii=False, indent=2)
+    yesterday_workout_review = daily_state.get("yesterday_workout_review", {}) or {}
+    yesterday_workout_review_json = json.dumps(yesterday_workout_review, ensure_ascii=False, indent=2)
+    tomorrow_slots_json = json.dumps(tomorrow_slots, ensure_ascii=False, indent=2)
+    xc_reason_json = json.dumps(xc_obj.get("xc_reason", []), ensure_ascii=False)
+    urgency_json = json.dumps(urgency_obj, ensure_ascii=False)
+    daily_five_mode = str((daily_five_plan or {}).get("today_training_mode", "") or "").strip().lower()
+    if daily_five_mode not in {"recovery", "build", "push"}:
+        daily_five_mode = infer_training_mode(yesterday_workout_review, available_slots)
+    training_anchor = {
+        "mode": daily_five_mode,
+        "is_soft_anchor": True,
+        "source": "daily_five_or_yesterday_review",
+    }
+    training_anchor_json = json.dumps(training_anchor, ensure_ascii=False)
+    persona_context = build_common_persona_context()
+    north_star_context = build_north_star_context()
 
     prompt = f"""
-You are 'Dr. MBJS', a 28-year-old female lovely elite health performance coach who admires and loves the user and calls the user '찜머'
+{persona_context}
+{north_star_context}
 
-[TIME ANCHORS — MUST OBEY]
-- Now (KST): {now_kst.strftime("%Y-%m-%d %H:%M")}
-- TODAY date_key: {date_key}
-- YESTERDAY date_key: {yesterday_key}
-- Late Mode: {"TRUE" if late_mode else "FALSE"} (after 20:30 KST, long workout is forbidden)
+역할: 실시간 코칭 에디터
+언어: 한국어 존댓말
 
-[LOG LABEL RULES]
-- Any Action_Log row with Date == {date_key} is "TODAY" (오늘).
-- Any Action_Log row with Date == {yesterday_key} is "YESTERDAY" (어제).
-- NEVER call a {date_key} log "yesterday".
+[섹션 목표]
+- Action Plan은 '속보'처럼 지금 시점 행동을 안내해야 합니다.
+- Daily Check-in의 큰 방향을 바탕으로, 지금 당장 실행 가능한 코칭을 만듭니다.
+- xC와 스프린트 마일스톤 달성 확률을 높이는 방향으로 제안합니다.
+- 응원, 독려, 경고 톤은 상황에 맞게 자율적으로 사용하십시오.
+- 이 섹션의 최우선 목적은 분석 전시가 아니라 행동 변화 유도입니다.
 
-[HARD GATE — AVAILABLE_SLOTS ONLY]
-You MUST plan only within enabled slots.
-If after_work_main.enabled == false -> DO NOT suggest gym/run at night.
-If lunch_micro.enabled == true -> you may suggest 30min workout.
-If no workout slot enabled -> diet-only + micro steps only.
+[중요 원칙]
+- daily_state 사실과 모순되지 마십시오.
+- 캘린더 원문이 아니라 available_slots를 사실로 사용하십시오.
+- available_slots에서 enabled=true 운동 슬롯이 하나도 없으면 신규 운동을 제안하지 말고, 하루 마무리 코칭만 제시하십시오.
+- 오늘 xC 수치를 반드시 본문에 명시하고, 행동 강도 판단의 근거로 사용하십시오.
+- 로그가 적어도 판단을 포기하지 말고, 현재 데이터로 최선의 실행안을 제시하십시오.
+- 코드 토큰(gym_quick_30 등)을 노출하지 마십시오.
+- json 객체 1개만 출력하십시오.
 
-AVAILABLE_SLOTS(JSON):
-{slots_json}
+[COACHING_CONTEXT]
+- heuristic_mode: {coaching_mode}
+- xc_value_kg: {xc_value}
+- xc_reason: {xc_reason_json}
+- urgency: {urgency_json}
 
-[PERSONA]
-- Professional & Analytical + Supportive
-- Language: STRICT Korean Honorifics ONLY
+[YESTERDAY_WORKOUT_REVIEW]
+{yesterday_workout_review_json}
 
-[DAILY FIVE RULE]
-- Daily Five is NOT authoritative.
-- If Daily Five conflicts with available_slots, IGNORE it completely.
+[TRAINING_ANCHOR]
+{training_anchor_json}
+- training_anchor.mode는 오늘 코칭의 기본 방향(soft anchor)입니다.
+- 다만 시간/슬롯/컨디션 등 현실 데이터가 바뀌면 mode를 유연하게 조정할 수 있습니다.
+- mode를 조정했다면 next_actions에 이유를 1문장으로 명시하십시오.
 
-[SPRINT STATE]
-- sprint_active: {("YES" if sprint else "NO")}
-- sprint_started: {("YES" if sprint_started else "NO")}
-- pace_status: {(progress.get("pace_status") if progress else "None")}
-- weight_expected(linear): {(progress.get("weight_expected") if progress else "None")}
-- xW(today fixed): {(xw_weight if xw_weight is not None else "None")}
-- trend(today): {(trend_weight if trend_weight is not None else "None")}
-- gap(trend-xW): {(gap if gap is not None else "None")}
-- today_intake_kcal_est: {today_intake.get("calories",0)}
-- today_meals_count: {today_intake.get("meals",0)}
-- LOCKDOWN_LEVEL: {lockdown_level}
+[SPRINT_STATUS]
+{sprint_status_json}
 
-[LOCKDOWN RULES — NON-NEGOTIABLE]
-- If LOCKDOWN_LEVEL == 2:
-  - Dinner is FORBIDDEN. Output must contain "저녁 차단" commands only.
-  - Allowed intake: water / unsweetened only OR <=200kcal protein only (choose ONE, no options).
-  - You MUST also assign "tomorrow lunch slot" as forced.
-- If LOCKDOWN_LEVEL == 1:
-  - Dinner must be <=500kcal, low-carb, high-protein. One decided plan only.
-- If LOCKDOWN_LEVEL == 0:
-  - Normal deficit dinner, but still specific.
+[DAILY_FIVE_STATUS]
+{daily_five_status_json}
 
-[DAILY FIVE WHIP — MUST USE]
-- You MUST pick EXACTLY 2 items from DAILY FIVE text below and mark them as "필수".
-- If progress indicates behind OR LOCKDOWN_LEVEL >= 1:
-    - You MUST escalate: add 1 extra punishment mission (still obey enabled slots).
-- If sprint_started == NO:
-    - Do NOT invent sprint tasks. Instead force "pre-sprint" setup and lunch slot lock.
+[DAILY_STATE]
+{daily_state_json}
 
-[ANTI-GENERIC RULE]
-- next_actions MUST reference:
-  (1) at least TWO specific log lines (time+content) from [LOGS], AND
-  (2) one concrete number from sprint/xW/gap/intake (e.g., gap, kcal, expected weight).
-- If you cannot do both, you MUST output: "데이터 부족으로 오늘은 판단 불가".
+[TOMORROW_SLOTS]
+date_key: {tomorrow_key}
+enabled_count: {len(tomorrow_enabled_slots)}
+{tomorrow_slots_json}
 
-[WORKOUT DISTRIBUTION RULE]
-- Cardio + Core: 70% priority
-- Upper body: 15%
-- Lower body: 15%
-
-[OUTPUT RULES]
-- NO GENERIC COACHING. Every sentence must reference ONE of:
-    (a) today's logs, (b) today's calendar constraint, (c) xW_push gap, (d) time of day (late/closing).
-- Each line must be an executable command, not a suggestion.
-- Ban phrases like: "권장드립니다", "추천드립니다", "가능하면", "도움이 됩니다".
-- If you cannot reference today's specific logs/calendar/xW, return "데이터 부족으로 오늘은 판단 불가"라고 말해라.
-- Any numeric value you output MUST be rounded to 1 decimal place (e.g., 88.0, 1410.0, 0.7). Never output long decimals.
-
-[COACHING STRUCTURE — MUST FOLLOW]
-You MUST output in this exact sequence:
-
-A) ONE-LINE VERDICT (단정문 1줄)
-- "지금은 승리/패배/위기" 같은 판정 문장으로 시작.
-
-B) HARD COMMANDS (3~6 lines, each line is a command)
-- No choices. No "가능하면/추천/권장". Only orders.
-
-C) DAMAGE DISCLOSURE (피해 적나라하게 2~4줄)
-- For each missed command, state a concrete loss:
-  1) xW 갭 악화(kg 단위)
-  2) 다음날 행동력/식욕 폭주 가능성
-  3) 스프린트 실패 확률 증가
-- Use blunt, specific, consequence language.
-- Do NOT moralize the person. Attack behavior outcomes only.
-
-D) LOCK-IN MECHANISM (강제장치 1~2줄)
-- "내일 점심 슬롯 1개 강제 고정" 같은 강제 장치를 선언.
-
-[DAMAGE RULES — NO FLUFF]
-- Damage must include at least ONE number (kg / kcal / %).
-- Must name the mechanism:
-  "오늘 밤 섭취 → 내일 아침 체중/추세 반영 → xW 미달"
-- Must include a time anchor:
-  "내일 아침" / "48시간" / "이번 스프린트 남은 N일"
-- Ban phrases: "부정적 영향", "악영향", "주의" (너무 약함)
-
-
-[MOTIVATION - CREATE URGENCY] (warnings에 반영)
-- Use real consequences and tight framing, but keep honorifics.
-
-{full_context}
-
-{dailyfive_txt}
-
-[CURRENT STATUS]
-Time of Day: {time_of_day}
-Time Remaining: {time_remaining_desc}
-HRV: {hrv} | RHR: {rhr} | Weight: {weight}
-xW(today fixed): {xw_weight if xw_weight is not None else "None"}
-
-{constraint_text}
-
-[LOGS]
-{activities_text}
-
-[TASK]
-Create a tactical plan for the remaining hours of today.
-
-[HARD BEHAVIOR RULES — DO NOT VIOLATE]
-1) NO OPTIONS / NO CHOICES:
-    - Do NOT say "가능한 운동 유형은 A/B".
-    - Pick ONE plan only. Make it executable now.
-2) LATE NIGHT SHUTDOWN RULE:
-    - If Time of Day is "Night" OR now(KST) >= 21:00:
-        - NEVER suggest long workouts (gym_full_120, outdoor_run_60, HIIT 40m etc.)
-        - ONLY allow: 10~20m walk, very short mobility, or "no workout".
-        - Focus on preventing damage (late-night eating, alcohol, sleep sabotage) + planning tomorrow's forced move.
-3) CALENDAR HARD GATE:
-    - If evening_event exists (19:00~23:59 overlap), DO NOT recommend AFTER-WORK workout at all.
-    - No "somehow squeeze it in". No partial windows.
-    - If workout deficit exists, shift the pressure to LUNCH (30m) or DIET.
-4) xW WHIP ENGINE:
-    - Use xW (today fixed) as the scoreboard.
-    - Based on today's logs so far, state whether user is on track to hit xW_push tomorrow morning.
-    - If off-track: be direct, slightly aggressive, and name the exact correction needed tonight.
-
-[CRITICAL INSTRUCTIONS]
-- Use RELATIVE time expressions
-- DO NOT mention specific clock time
-- Respect hard gate strictly (enabled slots only)
-
-[LATE MODE HARD GATE]
-- If now is after {LATE_MODE_START_HOUR:02d}:{LATE_MODE_START_MIN:02d} KST, you MUST NOT propose:
-    - gym_full_120, outdoor_run_60, HIIT, or any workout longer than 20 minutes
-    - any plan that assumes the user will "go to the gym now"
-- In Late Mode, you may ONLY propose:
-    - 10–20 min walk if feasible
-    - strict late-night food/alcohol blocking rules (very concrete)
-    - next-day setup (e.g., declare lunch workout, prepare clothes, set alarm)
-    - actions that increase the chance of hitting tomorrow morning xW (NOT generic wellness talk)
-
-[NO OPTION DUMPING]
-- NEVER say "you can choose A or B". Output ONE decided plan.
-- You may include ONE fallback only if the first plan is impossible.
+[TODAY_LOG_EVIDENCE]
+{logs_text}
 
 [OUTPUT FORMAT - JSON]
 {{
-  "current_analysis": "Korean Honorifics",
-  "next_actions": "SINGLE STRING with line breaks, Korean Honorifics",
-  "warnings": "Korean Honorifics"
+  "current_analysis": "현재 상황 해석 (1~3문장)",
+  "next_actions": "즉시 실행 가능한 코칭 본문. 여러 줄 가능.",
+  "warnings": "리스크/경고가 있으면 작성, 없으면 빈 문자열"
 }}
 """
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4-turbo-preview",
+            model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
         result = json.loads(response.choices[0].message.content)
+        result = validate_action_plan_output(result, daily_state)
 
         now_kst2 = get_current_kst()
         result['generated_at'] = now_kst2.strftime('%H:%M')
@@ -1529,24 +2659,39 @@ Create a tactical plan for the remaining hours of today.
         return result
     except Exception as e:
         print("action plan error:", e)
+        fallback = {
+            "current_analysis": "AI 호출 실패로 규칙 기반 플랜으로 전환했습니다.",
+            "next_actions": build_rule_based_action_plan(daily_state),
+            "warnings": format_ai_error_message(e),
+            "fallback_mode": "ai_error",
+        }
+        fallback = validate_action_plan_output(fallback, daily_state)
         now_kst2 = get_current_kst()
         return {
-            "current_analysis": "분석 중...",
-            "next_actions": "데이터 대기 중...",
-            "warnings": "",
+            "current_analysis": fallback.get("current_analysis", "AI 호출 실패"),
+            "next_actions": fallback.get("next_actions", "데이터 부족으로 오늘은 판단 불가"),
+            "warnings": fallback.get("warnings", ""),
             "generated_at": now_kst2.strftime('%H:%M'),
             "generated_hours_left": 24 - now_kst2.hour
         }
 
 def ai_generate_action_plan(hrv, rhr, weight, full_context, today_activities, available_slots):
     slots_key = json.dumps(available_slots, ensure_ascii=False, sort_keys=True)
-    return ai_generate_action_plan_cached(
-        hrv, rhr, weight,
-        normalize_context_for_cache(full_context),
-        tuple(today_activities),
-        slots_key,
-        available_slots
-    )
+    date_key = get_mission_date_key()
+    try:
+        return ai_generate_action_plan_cached(
+            hrv, rhr, weight,
+            date_key,
+            slots_key,
+            available_slots
+        )
+    except Exception:
+        # 캐시 우회 1회 실행 (실패 결과 비캐시)
+        return ai_generate_action_plan_internal(
+            hrv, rhr, weight,
+            list(today_activities),
+            available_slots
+        )
 
 def ai_parse_log(category, user_text, log_time, ref_data=""):
     client = OpenAI(api_key=OPENAI_API_KEY)
@@ -1631,9 +2776,304 @@ Output JSON: {
         return {"summary": user_text, "error": str(e)}
 
 
+def _normalize_food_key(text):
+    t = str(text or "").lower()
+    t = re.sub(r"[^0-9a-z가-힣]", "", t)
+    return t
+
+
+def _to_float(v, default=0.0):
+    try:
+        return float(v)
+    except:
+        return float(default)
+
+
+@st.cache_data(ttl=3600 * 12)
+def load_food_nutrition_index():
+    cols = ["name", "kcal", "protein", "fat", "carbs"]
+    try:
+        df = pd.read_csv("food_db.csv", usecols=cols)
+    except Exception:
+        return {"exact": {}, "token": {}}
+
+    if df.empty:
+        return {"exact": {}, "token": {}}
+
+    exact_sum = {}
+    token_sum = {}
+
+    for _, r in df.iterrows():
+        name = str(r.get("name", "") or "").strip()
+        if not name:
+            continue
+        kcal = _to_float(r.get("kcal", 0))
+        protein = _to_float(r.get("protein", 0))
+        fat = _to_float(r.get("fat", 0))
+        carbs = _to_float(r.get("carbs", 0))
+        payload = {"kcal": kcal, "protein": protein, "fat": fat, "carbs": carbs}
+
+        # exact key
+        exact_key = _normalize_food_key(name.replace("_", " "))
+        if exact_key:
+            s = exact_sum.get(exact_key, {"kcal": 0.0, "protein": 0.0, "fat": 0.0, "carbs": 0.0, "n": 0})
+            s["kcal"] += payload["kcal"]
+            s["protein"] += payload["protein"]
+            s["fat"] += payload["fat"]
+            s["carbs"] += payload["carbs"]
+            s["n"] += 1
+            exact_sum[exact_key] = s
+
+        # token keys
+        toks = re.findall(r"[0-9a-zA-Z가-힣]+", name.replace("_", " "))
+        for tok in toks:
+            tk = _normalize_food_key(tok)
+            if len(tk) < 2 or tk in NUTRITION_STOPWORDS:
+                continue
+            s = token_sum.get(tk, {"kcal": 0.0, "protein": 0.0, "fat": 0.0, "carbs": 0.0, "n": 0})
+            s["kcal"] += payload["kcal"]
+            s["protein"] += payload["protein"]
+            s["fat"] += payload["fat"]
+            s["carbs"] += payload["carbs"]
+            s["n"] += 1
+            token_sum[tk] = s
+
+    def _avg_map(src):
+        out = {}
+        for k, s in src.items():
+            n = max(1, int(s.get("n", 1)))
+            out[k] = {
+                "kcal": s["kcal"] / n,
+                "protein": s["protein"] / n,
+                "fat": s["fat"] / n,
+                "carbs": s["carbs"] / n,
+            }
+        return out
+
+    return {"exact": _avg_map(exact_sum), "token": _avg_map(token_sum)}
+
+
+def _split_food_items(text):
+    raw = str(text or "")
+    parts = re.split(r",|/|\\n|\\+| 및 | 그리고 ", raw)
+    return [p.strip() for p in parts if str(p or "").strip()]
+
+
+def _extract_multiplier(item_text, matched_token):
+    t = str(item_text or "")
+    frac = re.search(r"(\d+)\s*/\s*(\d+)", t)
+    if frac:
+        den = max(1, int(frac.group(2)))
+        return float(int(frac.group(1)) / den)
+
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(인분|그릇|공기|마리|캔|병|잔|개|세트|조각|컵)", t)
+    if m:
+        return max(0.1, float(m.group(1)))
+
+    if ("반" in t) and not re.search(r"\d", t):
+        return 0.5
+
+    ml = re.search(r"(\d+(?:\.\d+)?)\s*ml", t, flags=re.IGNORECASE)
+    if ml and (matched_token in BEVERAGE_TOKENS):
+        return max(0.1, float(ml.group(1)) / 250.0)
+
+    return 1.0
+
+
+def estimate_nutrition_from_text(user_text):
+    idx = load_food_nutrition_index()
+    token_map = idx.get("token", {}) or {}
+    exact_map = idx.get("exact", {}) or {}
+    items = _split_food_items(user_text)
+
+    total = {"kcal": 0.0, "protein": 0.0, "fat": 0.0, "carbs": 0.0}
+    matched_tokens = []
+
+    alias_keys = sorted(FOOD_ALIAS_MAP.keys(), key=len, reverse=True)
+
+    for item in items:
+        norm = _normalize_food_key(item)
+        if not norm:
+            continue
+
+        chosen_token = None
+        chosen = None
+
+        # 0) explicit fallback profile first (high precision for frequent foods)
+        for fk in sorted(NUTRITION_FALLBACK_PROFILE.keys(), key=len, reverse=True):
+            if _normalize_food_key(fk) in norm:
+                chosen_token = _normalize_food_key(fk)
+                chosen = dict(NUTRITION_FALLBACK_PROFILE[fk])
+                break
+
+        # 1) exact match
+        if (chosen is None) and (norm in exact_map):
+            chosen_token = norm
+            chosen = exact_map[norm]
+
+        # 2) alias match
+        if chosen is None:
+            for ak in alias_keys:
+                if _normalize_food_key(ak) in norm:
+                    alias_target = _normalize_food_key(FOOD_ALIAS_MAP[ak])
+                    if alias_target in token_map:
+                        chosen_token = alias_target
+                        chosen = token_map[alias_target]
+                        break
+
+        # 3) token match
+        if chosen is None:
+            toks = re.findall(r"[0-9a-zA-Z가-힣]+", item)
+            toks = [(_normalize_food_key(x), len(_normalize_food_key(x))) for x in toks]
+            toks = [x for x in toks if x[0] and len(x[0]) >= 2 and x[0] not in NUTRITION_STOPWORDS]
+            toks.sort(key=lambda x: x[1], reverse=True)
+            for tk, _ in toks:
+                if tk in token_map:
+                    chosen_token = tk
+                    chosen = token_map[tk]
+                    break
+
+        if chosen is None:
+            continue
+
+        mult = _extract_multiplier(item, chosen_token)
+        total["kcal"] += chosen["kcal"] * mult
+        total["protein"] += chosen["protein"] * mult
+        total["fat"] += chosen["fat"] * mult
+        total["carbs"] += chosen["carbs"] * mult
+        matched_tokens.append(chosen_token)
+
+    return {
+        "calories": int(round(total["kcal"])),
+        "protein": round(total["protein"], 1),
+        "fat": round(total["fat"], 1),
+        "carbs": round(total["carbs"], 1),
+        "matched": matched_tokens,
+    }
+
+
+def parse_log_quick(category, user_text, log_time):
+    """
+    Tab3 저장 성능 개선용 로컬 파서.
+    OpenAI 호출 없이 즉시 JSON을 만들어 append_row 지연을 줄인다.
+    """
+    txt = (user_text or "").strip()
+    if not txt:
+        return {"summary": ""}
+
+    def _first_int(pattern, default=0):
+        m = re.search(pattern, txt, flags=re.IGNORECASE)
+        return int(m.group(1)) if m else default
+
+    def _first_float(pattern, default=0.0):
+        m = re.search(pattern, txt, flags=re.IGNORECASE)
+        return float(m.group(1)) if m else default
+
+    if "섭취" in category:
+        est = estimate_nutrition_from_text(txt)
+        kcal = int(est.get("calories", 0) or 0)
+        carbs = float(est.get("carbs", 0.0) or 0.0)
+        protein = float(est.get("protein", 0.0) or 0.0)
+        fat = float(est.get("fat", 0.0) or 0.0)
+        if kcal <= 0:
+            # fallback heuristic (DB 매칭 실패 시)
+            kcal = _first_int(r"(\d{2,4})\s*kcal", 0)
+            if kcal <= 0:
+                kcal_table = {
+                    "샐러드": 350,
+                    "김밥": 450,
+                    "햄버거": 650,
+                    "치킨": 800,
+                    "라면": 500,
+                    "떡볶이": 550,
+                    "피자": 750,
+                    "밥": 550,
+                }
+                for k, v in kcal_table.items():
+                    if k in txt:
+                        kcal = v
+                        break
+        macros = ""
+        if carbs > 0 or protein > 0 or fat > 0:
+            macros = f"탄:{carbs:.1f} 단:{protein:.1f} 지:{fat:.1f}"
+        return {
+            "calories": int(kcal),
+            "food_name": txt[:40],
+            "macros": macros,
+            "carbs": carbs,
+            "protein": protein,
+            "fat": fat,
+            "summary": f"섭취 기록 (약 {int(kcal)}kcal)" if kcal > 0 else "섭취 기록",
+        }
+
+    if "운동" in category:
+        mins = _first_int(r"(\d{1,3})\s*(분|min|minute)", 0)
+        if mins <= 0:
+            km = _first_float(r"(\d{1,2}(?:\.\d+)?)\s*km", 0.0)
+            if km > 0:
+                mins = int(max(10, round(float(km) * 7)))
+        if mins <= 0:
+            mins = 20
+        return {
+            "activity_type": "exercise",
+            "duration": int(mins),
+            "time": int(mins),
+            "summary": f"운동 기록 ({int(mins)}분)",
+        }
+
+    if "음주" in category:
+        soju = _first_int(r"소주\s*(\d+)\s*병", 0)
+        beer_can = _first_int(r"맥주\s*(\d+)\s*(캔|병)", 0)
+        beer_glass = _first_int(r"맥주\s*(\d+)\s*잔", 0)
+        wine = _first_int(r"와인\s*(\d+)\s*병", 0)
+        drinks = soju * 7 + int(beer_can * 1.5) + beer_glass + wine * 5
+        calories = int(drinks * 100)
+        return {
+            "alcohol_type": "기타",
+            "standard_drinks": int(drinks),
+            "calories": int(calories),
+            "summary": f"음주 기록 ({int(drinks)}잔, 약 {int(calories)}kcal)",
+        }
+
+    if "영양제" in category:
+        known = ["마그네슘", "밀크시슬", "락토핏", "오메가3", "비타민D3"]
+        supplements = [k for k in known if k in txt]
+        return {
+            "supplements": supplements,
+            "count": int(len(supplements)),
+            "details": ", ".join(supplements) if supplements else txt[:60],
+            "summary": f"영양제 {len(supplements)}종 복용" if supplements else "영양제 복용",
+        }
+
+    if "회복" in category:
+        mins = _first_int(r"(\d{1,3})\s*(분|min|minute)", 0)
+        cycles = _first_int(r"(\d{1,2})\s*(세트|사이클)", 0)
+        if mins <= 0 and cycles > 0:
+            mins = cycles * 20
+        return {
+            "activity_type": "recovery",
+            "cycles": int(cycles),
+            "duration": int(mins),
+            "summary": f"회복 기록 ({int(mins)}분)" if mins > 0 else "회복 기록",
+        }
+
+    if "노트" in category:
+        return {
+            "symptoms": [],
+            "stress_level": "medium",
+            "summary": txt[:120],
+        }
+
+    return {"summary": txt[:120]}
+
+
 # ==========================================
 # [메인 UI]
 # ==========================================
+_rollover_updates = run_daily_sprint_rollover_once()
+if DEBUG_MODE and _rollover_updates > 0:
+    print(f"sprint rollover updated rows: {_rollover_updates}")
+
 tab1, tab2, tab3, tab4 = st.tabs(["📊 대시보드", "🎯 Sprint", "📝 기록하기", "🏎️ Pit Wall"])
 
 # [TAB 1] Dashboard
@@ -1649,8 +3089,8 @@ with tab1:
             now_kst = get_current_kst()
             date_key = get_mission_date_key()
 
-            # 1) 캘린더 → 슬롯 먼저 생성 (xW 계산에 사용)
-            cal_evts = get_today_calendar_events()
+            # 1) 캘린더 -> 슬롯 생성
+            cal_evts = get_today_calendar_events(date_key)
             available_slots = build_available_slots(date_key, cal_evts)
 
             # 2) 오늘 액션 로그
@@ -1667,24 +3107,29 @@ with tab1:
             trend = get_or_create_daily_trend(date_key, df_h)
             trend_weight = trend["trend_weight"] if trend else None
 
-            # 5) xW (중요: trend_weight + available_slots 넣어서 계산)
-            xw = None
+            # 5) xC 계산
+            xc = None
             sprint = None
+            progress = None
             try:
                 sprint = get_active_sprint()
                 if sprint:
-                    cal_events = get_today_calendar_events()
-                    available_slots = build_available_slots(date_key, cal_events)
-                    xw = get_or_create_daily_xw(
-                        date_key,
-                        sprint,
-                        w_c,
+                    progress = calculate_sprint_progress(sprint, w_c, trend_weight=trend_weight)
+                    daily_state = build_daily_state(
+                        date_key=date_key,
+                        now_kst=now_kst,
+                        df_action=df_a,
+                        cal_evts=cal_evts,
+                        available_slots=available_slots,
+                        sprint_progress=progress,
                         trend_weight=trend_weight,
-                        available_slots=available_slots
+                        current_hrv=hrv_c,
+                        current_rhr=rhr_c,
                     )
+                    xc = get_or_create_daily_xc(date_key, sprint, daily_state)
             except Exception as e:
-                print("xW error:", e)
-                xw = None
+                print("xC error:", e)
+                xc = None
 
             
             mission = calculate_mission_status(w_c)
@@ -1720,7 +3165,7 @@ with tab1:
             ck_res = None
 
             if mj_score >= 60:
-                st.error(f"🚨 일상 막장 지수 {mj_score}/100 — 최근 3일이 무너지고 있습니다. 오늘은 ‘차단 모드’로 갑니다.")
+                st.error(f"🚨 일상 막장 지수 {mj_score}/100 - 최근 3일이 무너지고 있습니다. 오늘은 차단 모드로 갑니다.")
 
 
             df_h['Date_Clean'] = pd.to_datetime(df_h['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
@@ -1766,11 +3211,12 @@ with tab1:
                     sprint = get_active_sprint()
                     if sprint:
                         if not load_dailyfive_cache(date_key, sprint['sprint_id']):
+                            ywr = summarize_yesterday_workout_review(df_a, date_key)
                             five = ai_generate_daily_five(
                                 date_key,
                                 sprint,
                                 {'weight': float(m_row['Weight']), 'hrv': float(m_row['HRV']), 'rhr': float(m_row['RHR'])},
-                                {'available_slots': available_slots}  # ✅ [FIX]
+                                {'available_slots': available_slots, 'yesterday_workout_review': ywr}  # ✅ [FIX]
                             )
                             if five:
                                 save_dailyfive_cache(date_key, sprint['sprint_id'], five)
@@ -1812,6 +3258,8 @@ with tab1:
             )
 
             st.markdown(f"""<h3 style="margin-bottom: 10px;">⚡ Action Plan <span class="time-badge">{ap.get('generated_at', now_kst.strftime('%H:%M'))} 기준</span></h3>""", unsafe_allow_html=True)
+            if xc and (xc.get("xc_value_kg") is not None):
+                st.caption(f"🎯 xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.1f}kg")
 
             with st.container(border=True):
                 st.markdown(f"**📊 현재 상황:** {ap.get('current_analysis')}")
@@ -1867,26 +3315,30 @@ with tab2:
                     trend = get_or_create_daily_trend(date_key, df_h)
                     trend_weight = trend["trend_weight"] if trend else None
                     
-                    cal_events = get_today_calendar_events()
+                    cal_events = get_today_calendar_events(date_key)
                     available_slots = build_available_slots(date_key, cal_events)
 
-                    xw = get_or_create_daily_xw(
-                        date_key,
-                        sprint,
-                        current_weight,
-                        trend_weight=trend_weight,
-                        available_slots=available_slots
-                    )
-                    xw_weight = xw.get("xw_weight") if xw else None
-
-
                     progress = calculate_sprint_progress(sprint, current_weight, trend_weight=trend_weight)
+                    df_action_tab2 = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
+                    daily_state = build_daily_state(
+                        date_key=date_key,
+                        now_kst=get_current_kst(),
+                        df_action=df_action_tab2,
+                        cal_evts=cal_events,
+                        available_slots=available_slots,
+                        sprint_progress=progress,
+                        trend_weight=trend_weight,
+                        current_hrv=current_hrv,
+                        current_rhr=current_rhr,
+                    )
+                    xc = get_or_create_daily_xc(date_key, sprint, daily_state)
+                    xc_value = xc.get("xc_value_kg") if xc else None
 
                     if progress:
                         with st.container(border=True):
                             day = progress['day']
                             total = progress['sprint']['duration_days']
-                            progress_pct = progress['progress_pct']
+                            progress_pct = min(100.0, max(0.0, float(progress.get('progress_pct', 0.0))))
 
                             st.caption(f"Day {day}/{total}")
                             st.progress(progress_pct / 100)
@@ -1957,16 +3409,16 @@ with tab2:
                             else:
                                 st.caption("📈 추세체중(EWMA) 없음 → 현재체중 기준")
 
-                            if xw_weight is not None:
-                                st.caption(f"🎯 xW(기대체중) {xw_weight:.2f}kg")
+                            if xc_value is not None:
+                                st.caption(f"🎯 xC(오늘 기대 변화량) {xc_value:.1f}kg")
                             else:
-                                st.caption("🎯 xW 캐시 없음")
+                                st.caption("🎯 xC 계산값 없음")
 
 
                     st.markdown("### 💪🏽 Sprint: Daily Five")
                     st.caption(f"🕐 {date_key} 05:00 생성")
 
-                    cal_events = get_today_calendar_events()
+                    cal_events = get_today_calendar_events(date_key)
                     available_slots = build_available_slots(date_key, cal_events)
 
                     cached_five = load_dailyfive_cache(date_key, sprint['sprint_id'])
@@ -1975,7 +3427,10 @@ with tab2:
                             date_key,
                             sprint,
                             {'weight': current_weight, 'hrv': current_hrv, 'rhr': current_rhr},
-                            {'available_slots': available_slots}
+                            {
+                                'available_slots': available_slots,
+                                'yesterday_workout_review': summarize_yesterday_workout_review(df_action_tab2, date_key),
+                            }
                         )
                         if daily_five:
                             save_dailyfive_cache(date_key, sprint['sprint_id'], daily_five)
@@ -2141,7 +3596,7 @@ with tab3:
             else:
                 try:
                     with st.spinner("저장 중..."):
-                        parsed = ai_parse_log(log_category, text_clean, log_time)
+                        parsed = parse_log_quick(log_category, text_clean, log_time)
                         get_db_connection("Action_Log").append_row([
                             log_date.strftime("%Y-%m-%d"),
                             log_time,
@@ -2151,8 +3606,6 @@ with tab3:
                             ""
                         ])
                     st.success("✅ 저장 완료!")
-                    st.cache_data.clear()
-                    st.rerun()
                 except Exception as e:
                     st.error(f"저장 실패: {e}")
 
@@ -2200,6 +3653,39 @@ with tab4:
         st.write("sprint start:", _s['start_date'])
     else:
         st.write("sprint start:", "(no active sprint)")
+
+    st.write("debug mode:", DEBUG_MODE)
+
+    if DEBUG_MODE:
+        try:
+            date_key_dbg = get_mission_date_key()
+            now_kst_dbg = get_current_kst()
+            df_action_dbg = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
+            cal_dbg = get_today_calendar_events(date_key_dbg)
+            slots_dbg = build_available_slots(date_key_dbg, cal_dbg)
+            sprint_dbg = get_active_sprint()
+            trend_dbg = None
+            progress_dbg = None
+            if sprint_dbg:
+                df_health_dbg = pd.DataFrame(get_db_connection("Health_Log").get_all_records())
+                trend_obj_dbg = get_or_create_daily_trend(date_key_dbg, df_health_dbg)
+                trend_dbg = trend_obj_dbg.get("trend_weight") if trend_obj_dbg else None
+                current_w_dbg = float(df_health_dbg.iloc[-1].get("Weight", 0)) if not df_health_dbg.empty else 0.0
+                progress_dbg = calculate_sprint_progress(sprint_dbg, current_w_dbg, trend_weight=trend_dbg)
+
+            ds_dbg = build_daily_state(
+                date_key=date_key_dbg,
+                now_kst=now_kst_dbg,
+                df_action=df_action_dbg,
+                cal_evts=cal_dbg,
+                available_slots=slots_dbg,
+                sprint_progress=progress_dbg,
+                trend_weight=trend_dbg,
+            )
+            st.write("daily_state preview:")
+            st.json(ds_dbg)
+        except Exception as e:
+            st.warning(f"debug daily_state error: {e}")
 
     if st.button("🔄 전체 캐시 클리어"):
         st.cache_data.clear()
