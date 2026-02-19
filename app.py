@@ -578,6 +578,25 @@ def get_current_kst():
     # 앱 전체에서 KST aware datetime만 사용
     return datetime.now(KST)
 
+
+def get_dashboard_subpage():
+    try:
+        q = st.experimental_get_query_params()
+        return str((q.get("dash", [""])[0]) or "").strip().lower()
+    except:
+        return ""
+
+
+def set_dashboard_subpage(page_name=""):
+    try:
+        if page_name:
+            st.experimental_set_query_params(dash=str(page_name))
+        else:
+            st.experimental_set_query_params()
+    except:
+        pass
+
+
 def normalize_context_for_cache(context_str):
     import re
     normalized = re.sub(r'\(\d{2}:\d{2}\)', '(TIME)', context_str)
@@ -1175,16 +1194,32 @@ def _has_any(text, keys):
     t = (text or "").lower()
     return any(k.lower() in t for k in keys)
 
-def compute_day_score(date_key, df_action):
+
+def compute_day_score_detail(date_key, df_action):
     """
-    return: day_score (대략 -40~+60 범위)
+    return: dict(score, factors, stats)
+    score 대략 -60~+80 범위
+    - 키워드 규칙(음주/정크/운동) 유지
+    - 섭취 kcal 및 탄단지 밸런스 반영
+    - 사우나 수행 시 충분한 감점(막장지수 완화)
     """
+    out = {
+        "score": 0,
+        "factors": [],
+        "stats": {
+            "intake_kcal": 0,
+            "carb_ratio": None,
+            "protein_ratio": None,
+            "fat_ratio": None,
+            "sauna_count": 0,
+        },
+    }
     if df_action is None or df_action.empty or "Date" not in df_action.columns:
-        return 0  # 데이터 없으면 중립
+        return out  # 데이터 없으면 중립
 
     day = df_action[df_action["Date"] == date_key].copy()
     if day.empty:
-        return 0  # 기록 없으면 '모름'이지만, 3일 합산이니 일단 0(중립)로 둡니다
+        return out  # 기록 없으면 '모름'이지만, 3일 합산이니 일단 0(중립)로 둡니다
 
     cat_text = " ".join(day.get("Category", "").astype(str).tolist())
     inp_text = " ".join(day.get("User_Input", "").astype(str).tolist())
@@ -1193,25 +1228,120 @@ def compute_day_score(date_key, df_action):
     has_workout = "운동" in cat_text
     has_bad_food = _has_any(inp_text, BAD_FOOD_KEYS)
 
+    intake_kcal = 0
+    carbs_g = 0.0
+    protein_g = 0.0
+    fat_g = 0.0
+    sauna_count = 0
+
+    for _, r in day.iterrows():
+        category = str(r.get("Category", "") or "")
+        user_input = str(r.get("User_Input", "") or "")
+
+        if ("사우나" in category) or ("사우나" in user_input):
+            sauna_count += 1
+
+        if "섭취" not in category:
+            continue
+        try:
+            js = json.loads(r.get("AI_Analysis_JSON", "{}") or "{}")
+        except:
+            js = {}
+        intake_kcal += _safe_int(js.get("calories", 0), 0)
+        carbs_g += _safe_float(js.get("carbs", 0.0), 0.0)
+        protein_g += _safe_float(js.get("protein", 0.0), 0.0)
+        fat_g += _safe_float(js.get("fat", 0.0), 0.0)
+
     # 기록 공백 페널티(가벼움)
     # - 하루 로그가 1개 이하이면 방치로 +5
     low_logging = len(day) <= 1
 
     score = 0
+    factors = []
+    def add_factor(name, points, detail=""):
+        if points == 0:
+            return
+        factors.append({"name": name, "points": int(points), "detail": detail})
+
     if has_alcohol:
         score += 30
+        add_factor("음주", +30, "음주 기록")
     if has_bad_food:
         score += 15
+        add_factor("정크키워드", +15, "고위험 음식 키워드")
     if has_workout:
         score -= 20
+        add_factor("운동 수행", -20, "운동 카테고리 기록")
     if low_logging:
         score += 5
+        add_factor("저기록 페널티", +5, "로그 1개 이하")
 
     # 시너지: 술+야식 같이 터지면 추가 벌점
     if has_alcohol and has_bad_food:
         score += 10
+        add_factor("음주+정크 시너지", +10, "동시 발생")
 
-    return score
+    # kcal 기반 가감(고칼로리/저칼로리 극단 리스크 반영)
+    if intake_kcal >= 2800:
+        score += 20
+        add_factor("섭취 kcal", +20, f"{intake_kcal}kcal (과다)")
+    elif intake_kcal >= 2300:
+        score += 12
+        add_factor("섭취 kcal", +12, f"{intake_kcal}kcal (높음)")
+    elif intake_kcal >= 1800:
+        score += 5
+        add_factor("섭취 kcal", +5, f"{intake_kcal}kcal (중상)")
+    elif intake_kcal >= 1200:
+        score -= 4
+        add_factor("섭취 kcal", -4, f"{intake_kcal}kcal (적정)")
+    elif intake_kcal > 0:
+        score += 2
+        add_factor("섭취 kcal", +2, f"{intake_kcal}kcal (저섭취)")
+
+    # 탄단지 밸런스 가감(값이 있는 날만)
+    macro_kcal = (carbs_g * 4.0) + (protein_g * 4.0) + (fat_g * 9.0)
+    if macro_kcal > 0:
+        carb_ratio = (carbs_g * 4.0) / macro_kcal
+        protein_ratio = (protein_g * 4.0) / macro_kcal
+        fat_ratio = (fat_g * 9.0) / macro_kcal
+        out["stats"]["carb_ratio"] = float(carb_ratio)
+        out["stats"]["protein_ratio"] = float(protein_ratio)
+        out["stats"]["fat_ratio"] = float(fat_ratio)
+
+        if protein_ratio < 0.18:
+            score += 8
+            add_factor("단백질 비율", +8, f"{protein_ratio*100:.0f}% (낮음)")
+        elif 0.25 <= protein_ratio <= 0.40:
+            score -= 3
+            add_factor("단백질 비율", -3, f"{protein_ratio*100:.0f}% (양호)")
+
+        if carb_ratio > 0.65:
+            score += 4
+            add_factor("탄수화물 비율", +4, f"{carb_ratio*100:.0f}% (높음)")
+        if fat_ratio > 0.40:
+            score += 4
+            add_factor("지방 비율", +4, f"{fat_ratio*100:.0f}% (높음)")
+
+        balanced = (0.20 <= protein_ratio <= 0.40) and (0.30 <= carb_ratio <= 0.60) and (0.15 <= fat_ratio <= 0.35)
+        if balanced:
+            score -= 4
+            add_factor("탄단지 밸런스", -4, "균형 구간")
+
+    # 사우나 수행일은 충분히 감점
+    if sauna_count > 0:
+        sauna_bonus = min(20, 12 + (sauna_count - 1) * 4)
+        score -= sauna_bonus
+        add_factor("사우나 보정", -sauna_bonus, f"{sauna_count}회")
+
+    out["score"] = int(score)
+    out["factors"] = factors
+    out["stats"]["intake_kcal"] = int(intake_kcal)
+    out["stats"]["sauna_count"] = int(sauna_count)
+    return out
+
+
+def compute_day_score(date_key, df_action):
+    return int((compute_day_score_detail(date_key, df_action) or {}).get("score", 0))
 
 def compute_makjang_3day_score(today_key, df_action):
     """
@@ -1222,20 +1352,157 @@ def compute_makjang_3day_score(today_key, df_action):
     d1 = (datetime.strptime(today_key, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     d2 = (datetime.strptime(today_key, "%Y-%m-%d") - timedelta(days=2)).strftime("%Y-%m-%d")
 
-    ds0 = compute_day_score(d0, df_action)
-    ds1 = compute_day_score(d1, df_action)
-    ds2 = compute_day_score(d2, df_action)
+    d0d = compute_day_score_detail(d0, df_action)
+    d1d = compute_day_score_detail(d1, df_action)
+    d2d = compute_day_score_detail(d2, df_action)
 
-    raw = 50 + (0.5*ds0 + 0.3*ds1 + 0.2*ds2)
+    ds0 = int(d0d.get("score", 0))
+    ds1 = int(d1d.get("score", 0))
+    ds2 = int(d2d.get("score", 0))
+    w0, w1, w2 = 0.5, 0.3, 0.2
+
+    raw = 50 + (w0*ds0 + w1*ds1 + w2*ds2)
     score = int(round(max(0, min(100, raw))))
+
+    weighted_factors = []
+    for dkey, dres, w in [("d0", d0d, w0), ("d1", d1d, w1), ("d2", d2d, w2)]:
+        for f in (dres.get("factors", []) or []):
+            weighted_factors.append({
+                "day": dkey,
+                "name": str(f.get("name", "")),
+                "points": int(f.get("points", 0)),
+                "weighted_points": round(float(f.get("points", 0)) * w, 2),
+                "detail": str(f.get("detail", "")),
+            })
 
     return {
         "score": score,
-        "d0": {"date": d0, "day_score": ds0},
-        "d1": {"date": d1, "day_score": ds1},
-        "d2": {"date": d2, "day_score": ds2},
+        "raw_score": float(raw),
+        "baseline": 50,
+        "d0": {
+            "date": d0,
+            "day_score": ds0,
+            "weight": w0,
+            "weighted_contribution": round(ds0 * w0, 2),
+            "factors": d0d.get("factors", []),
+            "stats": d0d.get("stats", {}),
+        },
+        "d1": {
+            "date": d1,
+            "day_score": ds1,
+            "weight": w1,
+            "weighted_contribution": round(ds1 * w1, 2),
+            "factors": d1d.get("factors", []),
+            "stats": d1d.get("stats", {}),
+        },
+        "d2": {
+            "date": d2,
+            "day_score": ds2,
+            "weight": w2,
+            "weighted_contribution": round(ds2 * w2, 2),
+            "factors": d2d.get("factors", []),
+            "stats": d2d.get("stats", {}),
+        },
+        "weighted_factors": weighted_factors,
         "method": "50 + weighted(day_scores)",
     }
+
+
+def render_makjang_score_drilldown(mj):
+    if not mj:
+        st.info("막장지수 데이터가 없습니다.")
+        return
+
+    day_rows = []
+    for key, label in [("d0", "오늘"), ("d1", "어제"), ("d2", "그제")]:
+        d = mj.get(key, {}) or {}
+        day_rows.append({
+            "구간": label,
+            "date": str(d.get("date", "")),
+            "day_score": float(d.get("day_score", 0)),
+            "weight": float(d.get("weight", 0)),
+            "weighted_contribution": float(d.get("weighted_contribution", 0)),
+        })
+    day_df = pd.DataFrame(day_rows)
+
+    st.caption(
+        f"공식: baseline {int(mj.get('baseline', 50))} + "
+        f"가중합 {float(mj.get('raw_score', 50)) - int(mj.get('baseline', 50)):.2f} "
+        f"= {int(mj.get('score', 0))}"
+    )
+
+    st.markdown("**일자별 원점수**")
+    day_chart_df = day_df[["구간", "day_score"]].set_index("구간")
+    st.bar_chart(day_chart_df)
+    st.dataframe(
+        day_df[["구간", "date", "day_score", "weight"]],
+        width="stretch",
+        hide_index=True,
+    )
+
+    wf = mj.get("weighted_factors", []) or []
+    if wf:
+        agg = {}
+        for r in wf:
+            name = str(r.get("name", "")).strip() or "기타"
+            agg[name] = agg.get(name, 0.0) + float(r.get("weighted_points", 0.0))
+
+        factor_rows = [{"요인": k, "가중점수": round(v, 2)} for k, v in agg.items()]
+        factor_df = pd.DataFrame(factor_rows)
+        factor_df["절대기여"] = factor_df["가중점수"].abs()
+        factor_df = factor_df.sort_values("절대기여", ascending=False)
+
+        st.markdown("**요인별 총 기여도(3일 가중합 기준)**")
+
+        pos_df = factor_df[factor_df["가중점수"] > 0].copy()
+        neg_df = factor_df[factor_df["가중점수"] < 0].copy()
+
+        c_pos, c_neg = st.columns([1, 1])
+        with c_pos:
+            st.caption("악화 요인 (+)")
+            if pos_df.empty:
+                st.write("-")
+            else:
+                st.bar_chart(pos_df.set_index("요인")[["가중점수"]])
+
+        with c_neg:
+            st.caption("완화 요인 (-)")
+            if neg_df.empty:
+                st.write("-")
+            else:
+                neg_chart_df = neg_df.copy()
+                neg_chart_df["완화기여"] = neg_chart_df["가중점수"].abs()
+                st.bar_chart(neg_chart_df.set_index("요인")[["완화기여"]])
+
+        factor_view = factor_df[["요인", "가중점수"]].copy()
+        factor_view["방향"] = factor_view["가중점수"].apply(lambda x: "악화(+)" if x > 0 else "완화(-)" if x < 0 else "중립")
+        st.dataframe(factor_view, width="stretch", hide_index=True)
+
+    with st.expander("세부 로그(일자별 점수 근거)"):
+        for key, label in [("d0", "오늘"), ("d1", "어제"), ("d2", "그제")]:
+            d = mj.get(key, {}) or {}
+            st.markdown(f"**{label} ({d.get('date','-')}) / day_score {d.get('day_score', 0)}**")
+            stats = d.get("stats", {}) or {}
+            if stats:
+                kcal = stats.get("intake_kcal", 0)
+                sauna_n = stats.get("sauna_count", 0)
+                p = stats.get("protein_ratio")
+                c = stats.get("carb_ratio")
+                f = stats.get("fat_ratio")
+                ratio_txt = "-"
+                if (p is not None) and (c is not None) and (f is not None):
+                    ratio_txt = f"탄:{c*100:.0f}% 단:{p*100:.0f}% 지:{f*100:.0f}%"
+                st.caption(f"kcal={kcal}, 탄단지={ratio_txt}, 사우나={sauna_n}회")
+            factors = d.get("factors", []) or []
+            if not factors:
+                st.write("- 중립(가감점 없음)")
+            else:
+                for f in factors:
+                    pts = int(f.get("points", 0))
+                    sign = "+" if pts >= 0 else ""
+                    nm = str(f.get("name", "요인"))
+                    dt = str(f.get("detail", ""))
+                    st.write(f"- {nm}: {sign}{pts} ({dt})")
 
 
 # ==========================================
@@ -3524,6 +3791,27 @@ _schema_synced = run_sheet_schema_sync_once()
 if DEBUG_MODE and _schema_synced:
     print("sprint sheet schema synced")
 
+_dashboard_subpage = get_dashboard_subpage()
+if _dashboard_subpage == "makjang":
+    st.markdown("### 📉 일상 막장 지수 상세")
+    c_back, c_empty = st.columns([0.18, 0.82])
+    with c_back:
+        if st.button("← 대시보드", width="stretch"):
+            set_dashboard_subpage("")
+            st.rerun()
+    with c_empty:
+        st.caption("최근 3일 점수 산정 근거")
+
+    try:
+        date_key_mj = get_mission_date_key()
+        df_action_mj = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
+        mj_detail = compute_makjang_3day_score(date_key_mj, df_action_mj)
+        st.metric("일상 막장 지수", f"{int(mj_detail.get('score', 0))}/100")
+        render_makjang_score_drilldown(mj_detail)
+    except Exception as e:
+        st.error(f"막장지수 상세 로딩 실패: {e}")
+    st.stop()
+
 tab1, tab2, tab3, tab4 = st.tabs(["📊 대시보드", "🎯 Sprint", "📝 기록하기", "🏎️ Pit Wall"])
 
 # [TAB 1] Dashboard
@@ -3604,10 +3892,13 @@ with tab1:
 <div style="font-size: 33px; font-weight: 900; color: #1A2B4D; margin-bottom: 4px;">{rhr_c:.1f}</div>
 <div style="font-size: 11px; color: #64748B;">{rhr_icon} (평균:65)</div>
 </div>
-<div style="flex: 1; background: #FFFFFF; padding: 12px 5px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+<a href="?dash=makjang" style="flex:1; display:flex; align-items:stretch; text-decoration:none; color:inherit; -webkit-tap-highlight-color: transparent;">
+<div style="width:100%; min-height:100%; background: #FFFFFF; padding: 14px 8px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); cursor:pointer;">
 <div style="font-size: 16px; color: #64748B; font-weight: 600; margin-bottom: 4px;">일상 막장 지수</div>
 <div style="font-size: 33px; font-weight: 900; color: #1A2B4D; margin-bottom: 4px;">{mj_score}</div>
-<div style="font-size: 11px; color: #64748B;">/100</div>
+<div style="font-size: 11px; color: #64748B;">/100 · 클릭해 상세 보기</div>
+</div>
+</a>
 </div>
 </div>
 """
@@ -4037,7 +4328,7 @@ with tab3:
                 label_visibility="collapsed",
             )
 
-            submitted = st.form_submit_button("🚀 저장", use_container_width=True)
+            submitted = st.form_submit_button("🚀 저장", width="stretch")
 
         if submitted:
             text_clean = (log_text or "").strip()
@@ -4098,7 +4389,7 @@ with tab3:
                 view_cols = [c for c in ["Date", "Action_Time", "Category", "User_Input"] if c in df.columns]
                 st.dataframe(
                     df.iloc[::-1][view_cols].head(100),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
         except Exception as e:
