@@ -222,7 +222,7 @@ def clear_old_caches(keep_days=7):
         now = get_current_kst()
         for filename in os.listdir(CACHE_DIR):
             # ✅ [FIX] startswith 사용 오류 수정
-            if filename.startswith(("checkin_", "dailyfive_", "trend_", "xc_", "xw_")):
+            if filename.startswith(("checkin_", "dailyfive_", "trend_", "xc_")):
                 filepath = os.path.join(CACHE_DIR, filename)
                 file_dt = datetime.fromtimestamp(os.path.getmtime(filepath), tz=KST)
                 if (now - file_dt).days > keep_days:
@@ -415,25 +415,106 @@ def build_dailyfive_status_text(date_key, sprint_id, df_action):
         return "Daily Five: None"
 
     today_logs = df_action[df_action['Date'] == date_key] if 'Date' in df_action.columns else df_action
-    inputs = " ".join([str(x) for x in today_logs.get('User_Input', []).tolist()]) if not today_logs.empty else ""
-    inputs_up = inputs.upper()
+    marks = collect_dailyfive_completion_marks(today_logs)
+    done_rows = build_dailyfive_done_rows(daily_five.get("tasks", []), marks)
+    done_map = {int(d.get("index", 0)): bool(d.get("done")) for d in done_rows}
 
     lines = ["[DAILY FIVE CHECKLIST]"]
-    for t in daily_five['tasks']:
-        tid = str(t.get('task_id', '')).upper()
+    for idx, t in enumerate(daily_five['tasks'], start=1):
         title = str(t.get('title', '')).strip()
-
-        done = False
-        if tid and f"DF5:{tid}" in inputs_up.replace(" ", ""):
-            done = True
-        elif len(title) >= 6 and "DF5:" in inputs_up and title.upper()[:6] in inputs_up:
-            done = True
+        done = bool(done_map.get(idx, False))
 
         mark = "✅" if done else "⬜"
         lines.append(f"{mark} ({t.get('task_id','')}) {title}")
 
-    lines.append("Rule: Mark ✅ when Action_Log contains 'DF5: task_id' or 'DF5: <title>'")
+    lines.append("Rule: Mark ✅ when Action_Log contains DF category with DF1~DF5 or legacy DF5 markers")
     return "\n".join(lines)
+
+
+def collect_dailyfive_completion_marks(today_logs):
+    marks = {
+        "df_numbers": set(),
+        "task_ids": set(),
+        "inputs_compact": "",
+        "inputs_upper": "",
+    }
+    if today_logs is None or today_logs.empty:
+        return marks
+
+    inputs = " ".join([str(x) for x in today_logs.get("User_Input", []).tolist()])
+    marks["inputs_upper"] = inputs.upper()
+    marks["inputs_compact"] = re.sub(r"\s+", "", marks["inputs_upper"])
+
+    for _, r in today_logs.iterrows():
+        cat = str(r.get("Category", "") or "").upper().strip()
+        text = str(r.get("User_Input", "") or "")
+        text_up = text.upper()
+        text_compact = re.sub(r"\s+", "", text_up)
+
+        # 신규 규칙: 카테고리=DF + DF1~DF5
+        if cat == "DF":
+            for m in re.finditer(r"(?<![A-Z0-9])DF\s*([1-5])(?!\d)", text_up):
+                marks["df_numbers"].add(int(m.group(1)))
+
+        # 레거시 호환: DF5:TASK_1 / DF5:TASK1
+        for m in re.finditer(r"DF5:TASK[_-]?([1-5])(?!\d)", text_compact):
+            marks["task_ids"].add(f"TASK_{int(m.group(1))}")
+
+    return marks
+
+
+def is_dailyfive_task_done(index, tid, title, marks):
+    idx = int(index)
+    tid_up = str(tid or "").upper().strip()
+    title_up = str(title or "").upper().strip()
+    inputs_up = str((marks or {}).get("inputs_upper", "") or "")
+    inputs_compact = str((marks or {}).get("inputs_compact", "") or "")
+    df_numbers = set((marks or {}).get("df_numbers", set()) or set())
+    task_ids = set((marks or {}).get("task_ids", set()) or set())
+
+    if idx in df_numbers:
+        return True
+
+    if tid_up and tid_up in task_ids:
+        return True
+
+    if tid_up and f"DF5:{tid_up}" in inputs_compact:
+        return True
+
+    if title_up and ("DF5:" in inputs_up):
+        compact_title = re.sub(r"\s+", "", title_up)
+        if len(compact_title) >= 6 and compact_title in inputs_compact:
+            return True
+    return False
+
+
+def build_dailyfive_done_rows(tasks, marks):
+    rows = []
+    df_numbers = set((marks or {}).get("df_numbers", set()) or set())
+    task_ids = set((marks or {}).get("task_ids", set()) or set())
+
+    for idx, t in enumerate((tasks or []), start=1):
+        tid = str(t.get("task_id", "")).upper().strip()
+        title = str(t.get("title", "")).strip()
+        title_up = title.upper()
+        done = is_dailyfive_task_done(idx, tid, title_up, marks)
+
+        evidence = ""
+        if idx in df_numbers:
+            evidence = f"DF{idx}"
+        elif tid and tid in task_ids:
+            evidence = f"DF5:{tid}"
+        elif title and ("DF5:" in str((marks or {}).get("inputs_upper", "") or "")):
+            evidence = "DF5:title_match"
+
+        rows.append({
+            "index": idx,
+            "task_id": tid,
+            "title": title,
+            "done": bool(done),
+            "evidence": evidence,
+        })
+    return rows
 
 
 def get_daily_five_completion(date_key, sprint_id, df_action):
@@ -465,28 +546,31 @@ def get_daily_five_completion(date_key, sprint_id, df_action):
         }
 
     today_logs = df_action[df_action["Date"] == date_key] if "Date" in df_action.columns else df_action
-    inputs = " ".join([str(x) for x in today_logs.get("User_Input", []).tolist()]) if not today_logs.empty else ""
-    inputs_up = inputs.upper().replace(" ", "")
+    marks = collect_dailyfive_completion_marks(today_logs)
+    done_rows = build_dailyfive_done_rows(tasks, marks)
+    completed = sum(1 for d in done_rows if d.get("done"))
+    completion_rate = float(completed / total) if total > 0 else 0.0
 
-    completed = 0
-    for t in tasks:
-        tid = str(t.get("task_id", "")).upper().strip()
-        title = str(t.get("title", "")).strip().upper()
-        done = False
-        if tid and f"DF5:{tid}" in inputs_up:
-            done = True
-        elif title and ("DF5:" in inputs_up):
-            compact_title = re.sub(r"\s+", "", title)
-            if compact_title and compact_title in inputs_up:
-                done = True
-        if done:
-            completed += 1
+    try:
+        sync_dailyfive_completion_to_sheet(date_key, sprint_id, done_rows)
+    except:
+        pass
+    try:
+        sync_daily_sprint_progress_completion(
+            date_key=date_key,
+            sprint_id=sprint_id,
+            completed=completed,
+            total=total,
+            completion_rate=completion_rate,
+        )
+    except:
+        pass
 
     return {
         "has_plan": True,
         "completed": int(completed),
         "total": int(total),
-        "completion_rate": float(completed / total) if total > 0 else 0.0,
+        "completion_rate": completion_rate,
     }
 
 
@@ -581,13 +665,17 @@ def get_mission_rules(mission_id):
 
 SPRINT_DAILY_TASKS_DEFAULT_HEADERS = [
     "Date", "Sprint_ID", "Task_ID", "Category", "Priority",
-    "Title", "Description", "Why", "Urgency_Level", "Daily_Message", "Today_Training_Mode", "Created_At",
+    "Title", "Description", "Why", "Urgency_Level", "Daily_Message", "Today_Training_Mode",
+    "Completed", "Completed_At", "Completion_Source", "Completion_Evidence", "Created_At",
 ]
 
 DAILY_SPRINT_PROGRESS_DEFAULT_HEADERS = [
     "Date", "Sprint_ID", "Completed", "Total", "Completion_Rate",
     "XC_Value_KG", "Urgency_Level", "Pace_Status", "Weight_Current",
-    "Trend_Weight", "Summary_JSON", "Updated_At",
+    "Trend_Weight",
+    "Start_Weight_KG", "Prev_Start_Weight_KG", "Prev_XC_KG",
+    "Actual_Change_KG", "XC_Gap_KG", "XC_Achievement_PCT",
+    "Summary_JSON", "Updated_At",
 ]
 
 
@@ -603,6 +691,94 @@ def _safe_float(v, default=0.0):
         return float(v)
     except:
         return default
+
+
+def _to_boolish(v):
+    s = str(v).strip().lower()
+    return s in {"1", "true", "t", "y", "yes", "done", "완료"}
+
+
+def _safe_date_key(v):
+    try:
+        return datetime.strptime(str(v).strip(), "%Y-%m-%d").date()
+    except:
+        return None
+
+
+def get_start_weight_kg_for_date(date_key):
+    """
+    해당 날짜의 아침 체중(Health_Log의 당일 첫 기록)을 우선 사용.
+    당일 값이 없으면 date_key 이전 최근 기록으로 fallback.
+    """
+    try:
+        records = fetch_sheet_data("Health_Log")
+        if not records:
+            return None
+        df = pd.DataFrame(records)
+        if df.empty or ("Date" not in df.columns) or ("Weight" not in df.columns):
+            return None
+
+        df["Date_Clean"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        df["Weight_num"] = pd.to_numeric(df["Weight"], errors="coerce")
+        df = df.dropna(subset=["Date_Clean", "Weight_num"])
+        if df.empty:
+            return None
+
+        day_df = df[df["Date_Clean"] == str(date_key)]
+        if not day_df.empty:
+            return float(day_df.iloc[0]["Weight_num"])
+
+        df = df[df["Date_Clean"] <= str(date_key)]
+        if not df.empty:
+            return float(df.iloc[-1]["Weight_num"])
+        return None
+    except Exception as e:
+        print("start weight load error:", e)
+        return None
+
+
+def _get_prev_progress_row(rows, sprint_id, date_key):
+    current_d = _safe_date_key(date_key)
+    if current_d is None:
+        return None
+    sprint_id_str = str(sprint_id)
+    picked = None
+    picked_d = None
+    for r in (rows or []):
+        if str(r.get("Sprint_ID", "")).strip() != sprint_id_str:
+            continue
+        rd = _safe_date_key(r.get("Date", ""))
+        if rd is None or rd >= current_d:
+            continue
+        if (picked_d is None) or (rd > picked_d):
+            picked = r
+            picked_d = rd
+    return picked
+
+
+def get_prev_xc_feedback(sprint_id, date_key):
+    """
+    전일(정확히는 date_key 이전 최근일)의 XC_Gap_KG를 반환.
+    양수면 전일 xC 미달.
+    """
+    try:
+        rows = fetch_sheet_data("Daily_Sprint_Progress")
+        prev = _get_prev_progress_row(rows, sprint_id, date_key)
+        if not prev:
+            return {"date": None, "gap_kg": None}
+        gap = _safe_float(prev.get("XC_Gap_KG"), None)
+        if gap is None:
+            prev_xc = _safe_float(prev.get("Prev_XC_KG"), None)
+            actual = _safe_float(prev.get("Actual_Change_KG"), None)
+            if (prev_xc is not None) and (actual is not None):
+                gap = float(prev_xc) - float(actual)
+        return {
+            "date": str(prev.get("Date", "")).strip() or None,
+            "gap_kg": (round(float(gap), 3) if gap is not None else None),
+        }
+    except Exception as e:
+        print("prev xc feedback load error:", e)
+        return {"date": None, "gap_kg": None}
 
 
 def _get_or_init_headers(sheet, default_headers):
@@ -663,6 +839,7 @@ def load_dailyfive_from_sheet(date_key, sprint_id):
                 "title": str(r.get("Title", "")).strip(),
                 "description": str(r.get("Description", "")).strip(),
                 "why": str(r.get("Why", "")).strip(),
+                "completed": _to_boolish(r.get("Completed", "")),
             })
 
         daily_message = ""
@@ -723,6 +900,10 @@ def persist_dailyfive_to_sheet(date_key, sprint_id, daily_five):
                 "Urgency_Level": urgency,
                 "Daily_Message": msg,
                 "Today_Training_Mode": mode,
+                "Completed": "0",
+                "Completed_At": "",
+                "Completion_Source": "",
+                "Completion_Evidence": "",
                 "Created_At": created_at,
             })
 
@@ -739,6 +920,10 @@ def persist_dailyfive_to_sheet(date_key, sprint_id, daily_five):
                 "Urgency_Level": urgency,
                 "Daily_Message": msg,
                 "Today_Training_Mode": mode,
+                "Completed": "0",
+                "Completed_At": "",
+                "Completion_Source": "",
+                "Completion_Evidence": "",
                 "Created_At": created_at,
             })
 
@@ -750,6 +935,140 @@ def persist_dailyfive_to_sheet(date_key, sprint_id, daily_five):
         return True
     except Exception as e:
         print("persist dailyfive sheet error:", e)
+        return False
+
+
+def sync_dailyfive_completion_to_sheet(date_key, sprint_id, done_rows):
+    try:
+        if not done_rows:
+            return False
+
+        sheet = get_db_connection("Sprint_Daily_Tasks")
+        headers = _get_or_init_headers(sheet, SPRINT_DAILY_TASKS_DEFAULT_HEADERS)
+        rows = sheet.get_all_records()
+        sprint_id_str = str(sprint_id)
+        now_str = get_current_kst().strftime("%Y-%m-%d %H:%M:%S")
+
+        done_by_tid = {}
+        done_by_idx = {}
+        for d in done_rows:
+            tid = str(d.get("task_id", "")).upper().strip()
+            idx = _safe_int(d.get("index", 0), 0)
+            if tid:
+                done_by_tid[tid] = d
+            if idx > 0:
+                done_by_idx[idx] = d
+
+        updated = 0
+        for row_num, r in enumerate(rows, start=2):
+            if (
+                str(r.get("Date", "")).strip() != str(date_key)
+                or str(r.get("Sprint_ID", "")).strip() != sprint_id_str
+            ):
+                continue
+
+            row_tid = str(r.get("Task_ID", "")).upper().strip()
+            row_idx = _safe_int(r.get("Priority", 0), 0)
+            d = done_by_tid.get(row_tid) or done_by_idx.get(row_idx)
+            if not d:
+                continue
+
+            existing_done = _to_boolish(r.get("Completed", ""))
+            new_done = bool(d.get("done")) or existing_done
+            evidence = str(d.get("evidence", "") or "").strip()
+
+            row_map = {h: r.get(h, "") for h in headers}
+            changed = False
+
+            completed_val = "1" if new_done else "0"
+            if str(row_map.get("Completed", "")).strip() != completed_val:
+                row_map["Completed"] = completed_val
+                changed = True
+
+            if new_done:
+                if not str(row_map.get("Completed_At", "")).strip():
+                    row_map["Completed_At"] = now_str
+                    changed = True
+                if not str(row_map.get("Completion_Source", "")).strip():
+                    row_map["Completion_Source"] = "action_log_df_marker"
+                    changed = True
+                if evidence and str(row_map.get("Completion_Evidence", "")).strip() != evidence:
+                    row_map["Completion_Evidence"] = evidence
+                    changed = True
+
+            if changed:
+                end_col = _a1_col(len(headers))
+                values = [row_map.get(h, "") for h in headers]
+                sheet.update(
+                    f"A{row_num}:{end_col}{row_num}",
+                    [values],
+                    value_input_option="RAW",
+                )
+                updated += 1
+
+        if updated > 0:
+            try:
+                fetch_sheet_data.clear()
+            except:
+                pass
+        return updated > 0
+    except Exception as e:
+        print("sync dailyfive completion error:", e)
+        return False
+
+
+def sync_daily_sprint_progress_completion(date_key, sprint_id, completed, total, completion_rate):
+    try:
+        sheet = get_db_connection("Daily_Sprint_Progress")
+        headers = _get_or_init_headers(sheet, DAILY_SPRINT_PROGRESS_DEFAULT_HEADERS)
+        rows = sheet.get_all_records()
+        sprint_id_str = str(sprint_id)
+        now_str = get_current_kst().strftime("%Y-%m-%d %H:%M:%S")
+
+        target_row_num = None
+        for idx, r in enumerate(rows, start=2):
+            if (
+                str(r.get("Date", "")).strip() == str(date_key)
+                and str(r.get("Sprint_ID", "")).strip() == sprint_id_str
+            ):
+                target_row_num = idx
+                break
+
+        if target_row_num:
+            row = rows[target_row_num - 2]
+            row_map = {h: row.get(h, "") for h in headers}
+            row_map["Date"] = str(date_key)
+            row_map["Sprint_ID"] = sprint_id_str
+            row_map["Completed"] = int(completed)
+            row_map["Total"] = int(total)
+            row_map["Completion_Rate"] = round(float(completion_rate), 4)
+            row_map["Updated_At"] = now_str
+
+            end_col = _a1_col(len(headers))
+            values = [row_map.get(h, "") for h in headers]
+            sheet.update(
+                f"A{target_row_num}:{end_col}{target_row_num}",
+                [values],
+                value_input_option="RAW",
+            )
+        else:
+            row_map = {h: "" for h in headers}
+            row_map["Date"] = str(date_key)
+            row_map["Sprint_ID"] = sprint_id_str
+            row_map["Completed"] = int(completed)
+            row_map["Total"] = int(total)
+            row_map["Completion_Rate"] = round(float(completion_rate), 4)
+            row_map["Updated_At"] = now_str
+            values = [row_map.get(h, "") for h in headers]
+            sheet.append_row(values, value_input_option="RAW")
+
+        try:
+            fetch_sheet_data.clear()
+        except:
+            pass
+        return True
+    except Exception as e:
+        print("sync sprint progress completion error:", e)
         return False
 
 
@@ -773,6 +1092,24 @@ def persist_daily_sprint_progress(date_key, sprint_id, daily_state, daily_five_s
         xc_obj = (daily_state or {}).get("xc", {}) or {}
         urgency_obj = (daily_state or {}).get("urgency", {}) or {}
         trend_obj = (daily_state or {}).get("trend", {}) or {}
+        fallback_w = _safe_float((sprint_progress or {}).get("weight_current"), None)
+        start_weight = get_start_weight_kg_for_date(date_key)
+        if start_weight is None and fallback_w is not None:
+            start_weight = float(fallback_w)
+
+        prev_row = _get_prev_progress_row(rows, sprint_id_str, date_key)
+        prev_start_weight = _safe_float((prev_row or {}).get("Start_Weight_KG"), None)
+        prev_xc = _safe_float((prev_row or {}).get("XC_Value_KG"), None)
+
+        actual_change = None
+        xc_gap = None
+        xc_ach_pct = None
+        if (prev_start_weight is not None) and (start_weight is not None):
+            actual_change = float(prev_start_weight) - float(start_weight)
+        if (prev_xc is not None) and (actual_change is not None):
+            xc_gap = float(prev_xc) - float(actual_change)
+            if float(prev_xc) != 0:
+                xc_ach_pct = (float(actual_change) / float(prev_xc)) * 100.0
 
         row_data = {
             "Date": str(date_key),
@@ -788,10 +1125,24 @@ def persist_daily_sprint_progress(date_key, sprint_id, daily_state, daily_five_s
                 if sprint_progress else ""
             ),
             "Trend_Weight": round(_safe_float(trend_obj.get("trend_weight", 0.0), 0.0), 3) if trend_obj else "",
+            "Start_Weight_KG": (round(float(start_weight), 3) if start_weight is not None else ""),
+            "Prev_Start_Weight_KG": (round(float(prev_start_weight), 3) if prev_start_weight is not None else ""),
+            "Prev_XC_KG": (round(float(prev_xc), 3) if prev_xc is not None else ""),
+            "Actual_Change_KG": (round(float(actual_change), 3) if actual_change is not None else ""),
+            "XC_Gap_KG": (round(float(xc_gap), 3) if xc_gap is not None else ""),
+            "XC_Achievement_PCT": (round(float(xc_ach_pct), 1) if xc_ach_pct is not None else ""),
             "Summary_JSON": json.dumps({
                 "xc_reason": xc_obj.get("xc_reason", []),
                 "today_logs_n": len((daily_state or {}).get("today_logs", []) or []),
                 "available_slots": (daily_state or {}).get("available_slots", []),
+                "calc": {
+                    "start_weight": start_weight,
+                    "prev_start_weight": prev_start_weight,
+                    "prev_xc": prev_xc,
+                    "actual_change": actual_change,
+                    "xc_gap": xc_gap,
+                    "xc_achievement_pct": xc_ach_pct,
+                },
             }, ensure_ascii=False),
             "Updated_At": get_current_kst().strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -1069,6 +1420,42 @@ def run_daily_sprint_rollover_once():
     except:
         return 0
 
+
+def ensure_sprint_sheet_headers():
+    """
+    Sprint 관련 시트의 필수 헤더를 선제적으로 동기화한다.
+    """
+    synced = False
+    try:
+        sh_tasks = get_db_connection("Sprint_Daily_Tasks")
+        _get_or_init_headers(sh_tasks, SPRINT_DAILY_TASKS_DEFAULT_HEADERS)
+        synced = True
+    except Exception as e:
+        print("ensure headers error (Sprint_Daily_Tasks):", e)
+
+    try:
+        sh_progress = get_db_connection("Daily_Sprint_Progress")
+        _get_or_init_headers(sh_progress, DAILY_SPRINT_PROGRESS_DEFAULT_HEADERS)
+        synced = True
+    except Exception as e:
+        print("ensure headers error (Daily_Sprint_Progress):", e)
+
+    return synced
+
+
+def run_sheet_schema_sync_once():
+    """
+    같은 날짜에는 한 번만 시트 헤더 동기화를 수행한다.
+    """
+    try:
+        today_key = get_current_kst().strftime("%Y-%m-%d")
+        if st.session_state.get("_sheet_schema_sync_checked_date") == today_key:
+            return False
+        st.session_state["_sheet_schema_sync_checked_date"] = today_key
+        return ensure_sprint_sheet_headers()
+    except:
+        return False
+
 def ewma(values, alpha=0.35):
     vals = [v for v in values if v is not None]
     if not vals:
@@ -1197,6 +1584,7 @@ def get_or_create_daily_xc(date_key, sprint, daily_state):
     total_loss = weight_goal["start_value"] - weight_goal["target_value"]
     daily_target = total_loss / sprint["duration_days"]
     xc_state = dict(daily_state or {})
+    xc_state["prev_xc_feedback"] = get_prev_xc_feedback(sprint["sprint_id"], date_key)
     slots_raw = list((daily_state or {}).get("available_slots", []) or [])
     slots_for_xc = []
     for s in slots_raw:
@@ -1811,6 +2199,18 @@ def compute_xc(daily_target, daily_state):
         adj += v
         reasons.append(f"{v:+.2f}:combined_bio_risk")
 
+    # 전일 xC 미달분 carry-over
+    prev_feedback = daily_state.get("prev_xc_feedback", {}) or {}
+    prev_gap = prev_feedback.get("gap_kg")
+    try:
+        prev_gap = float(prev_gap) if prev_gap is not None else None
+    except:
+        prev_gap = None
+    if (prev_gap is not None) and (prev_gap > 0):
+        carry = min(0.15, prev_gap * 0.7)
+        adj += carry
+        reasons.append(f"+{carry:.2f}:carry_over_from_prev_xc_gap({prev_gap:.2f}kg)")
+
     xc = clamp(base_xc + adj, xc_min, xc_max)
     return {
         "xc_value_kg": float(xc),
@@ -2061,6 +2461,26 @@ def validate_action_plan_output(result, daily_state):
     result["current_analysis"] = humanize_action_text(analysis)
     result["next_actions"] = humanize_action_text(text)
     result["warnings"] = warns.strip()
+    return result
+
+
+def apply_prev_xc_gap_warning(result, daily_state):
+    if not isinstance(result, dict):
+        return result
+    prev_feedback = (daily_state or {}).get("prev_xc_feedback", {}) or {}
+    gap = _safe_float(prev_feedback.get("gap_kg"), None)
+    if (gap is None) or (float(gap) <= 0):
+        return result
+
+    date_txt = str(prev_feedback.get("date") or "어제")
+    warn_line = (
+        f"{date_txt} xC 미달분이 {float(gap):.2f}kg 남아 있습니다. "
+        "오늘은 계획 이탈 없이 강행 모드로 진행하십시오."
+    )
+    warns = str(result.get("warnings", "") or "").strip()
+    if warn_line not in warns:
+        warns = f"{warns}\n{warn_line}".strip() if warns else warn_line
+    result["warnings"] = warns
     return result
 
 
@@ -2480,6 +2900,12 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
                 daily_state["urgency"] = compute_urgency(daily_state)
         except Exception:
             pass
+        try:
+            daily_state["prev_xc_feedback"] = get_prev_xc_feedback(sprint["sprint_id"], date_key)
+        except Exception:
+            daily_state["prev_xc_feedback"] = {"date": None, "gap_kg": None}
+    else:
+        daily_state["prev_xc_feedback"] = {"date": None, "gap_kg": None}
 
     tomorrow_key = (datetime.strptime(date_key, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
     tomorrow_slots = []
@@ -2566,6 +2992,8 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
     daily_five_status_json = json.dumps(daily_five_status, ensure_ascii=False, indent=2)
     yesterday_workout_review = daily_state.get("yesterday_workout_review", {}) or {}
     yesterday_workout_review_json = json.dumps(yesterday_workout_review, ensure_ascii=False, indent=2)
+    prev_xc_feedback = daily_state.get("prev_xc_feedback", {}) or {}
+    prev_xc_feedback_json = json.dumps(prev_xc_feedback, ensure_ascii=False, indent=2)
     tomorrow_slots_json = json.dumps(tomorrow_slots, ensure_ascii=False, indent=2)
     xc_reason_json = json.dumps(xc_obj.get("xc_reason", []), ensure_ascii=False)
     urgency_json = json.dumps(urgency_obj, ensure_ascii=False)
@@ -2613,6 +3041,11 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 [YESTERDAY_WORKOUT_REVIEW]
 {yesterday_workout_review_json}
 
+[PREV_XC_FEEDBACK]
+{prev_xc_feedback_json}
+- gap_kg가 양수면 전일 xC 미달입니다.
+- 해당 경우 warnings에 1문장 경고를 포함하십시오.
+
 [TRAINING_ANCHOR]
 {training_anchor_json}
 - training_anchor.mode는 오늘 코칭의 기본 방향(soft anchor)입니다.
@@ -2652,6 +3085,7 @@ enabled_count: {len(tomorrow_enabled_slots)}
         )
         result = json.loads(response.choices[0].message.content)
         result = validate_action_plan_output(result, daily_state)
+        result = apply_prev_xc_gap_warning(result, daily_state)
 
         now_kst2 = get_current_kst()
         result['generated_at'] = now_kst2.strftime('%H:%M')
@@ -2666,6 +3100,7 @@ enabled_count: {len(tomorrow_enabled_slots)}
             "fallback_mode": "ai_error",
         }
         fallback = validate_action_plan_output(fallback, daily_state)
+        fallback = apply_prev_xc_gap_warning(fallback, daily_state)
         now_kst2 = get_current_kst()
         return {
             "current_analysis": fallback.get("current_analysis", "AI 호출 실패"),
@@ -3064,6 +3499,18 @@ def parse_log_quick(category, user_text, log_time):
             "summary": txt[:120],
         }
 
+    if "DF" in str(category).upper():
+        marks = []
+        for m in re.finditer(r"(?<![A-Z0-9])DF\s*([1-5])(?!\d)", txt.upper()):
+            marks.append(f"DF{int(m.group(1))}")
+        marks = sorted(set(marks))
+        return {
+            "activity_type": "daily_five_completion",
+            "df_marks": marks,
+            "count": int(len(marks)),
+            "summary": f"Daily Five 수행 체크 ({', '.join(marks)})" if marks else "Daily Five 체크 기록",
+        }
+
     return {"summary": txt[:120]}
 
 
@@ -3073,6 +3520,9 @@ def parse_log_quick(category, user_text, log_time):
 _rollover_updates = run_daily_sprint_rollover_once()
 if DEBUG_MODE and _rollover_updates > 0:
     print(f"sprint rollover updated rows: {_rollover_updates}")
+_schema_synced = run_sheet_schema_sync_once()
+if DEBUG_MODE and _schema_synced:
+    print("sprint sheet schema synced")
 
 tab1, tab2, tab3, tab4 = st.tabs(["📊 대시보드", "🎯 Sprint", "📝 기록하기", "🏎️ Pit Wall"])
 
@@ -3561,7 +4011,7 @@ with tab3:
     default_hour = now_kst.hour
     default_minute = (now_kst.minute // 5) * 5
 
-    categories = ["섭취", "운동", "음주", "영양제", "회복", "노트"]
+    categories = ["섭취", "운동", "음주", "영양제", "회복", "노트", "DF"]
 
     with st.container(border=True):
         with st.form("log_form", clear_on_submit=True):
@@ -3605,6 +4055,28 @@ with tab3:
                             json.dumps(parsed, ensure_ascii=False),
                             ""
                         ])
+                        # DF 완료 마커 입력 시 Daily Five 완료율/시트 동기화를 즉시 반영
+                        try:
+                            cat_up = str(log_category or "").upper().strip()
+                            txt_up = str(text_clean or "").upper()
+                            if (cat_up == "DF") or ("DF5:" in txt_up):
+                                sprint_now = get_active_sprint()
+                                if sprint_now:
+                                    df_action_now = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
+                                    date_candidates = []
+                                    d_log = log_date.strftime("%Y-%m-%d")
+                                    d_mission = get_mission_date_key()
+                                    for d in [d_log, d_mission]:
+                                        if d not in date_candidates:
+                                            date_candidates.append(d)
+                                    for dk in date_candidates:
+                                        get_daily_five_completion(
+                                            dk,
+                                            sprint_now["sprint_id"],
+                                            df_action_now,
+                                        )
+                        except Exception as _sync_e:
+                            print("df completion immediate sync error:", _sync_e)
                     st.success("✅ 저장 완료!")
                 except Exception as e:
                     st.error(f"저장 실패: {e}")
