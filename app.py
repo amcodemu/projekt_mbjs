@@ -267,7 +267,7 @@ DAY_WRAPUP_START_HOUR = 21
 DAY_WRAPUP_START_MIN = 0  # 21:00 이후 신규 운동 제안 차단, 하루 마무리 모드
 WRAPUP_SWITCH_HOUR = 23
 WRAPUP_CACHE_VERSION = "v3"
-ACTION_PLAN_CACHE_VERSION = "v2"
+ACTION_PLAN_CACHE_VERSION = "v3"
 DAY_RESET_HOUR = 5
 DEFAULT_DAILY_KCAL_TARGET = 2000
 XC_BASELINE_KG = 0.30
@@ -319,6 +319,13 @@ HUMANIZE_MAP = {
 
 BEVERAGE_TOKENS = {"콜라", "사이다", "주스", "음료"}
 OPENAI_NUTRITION_TIMEOUT_SEC = 1.8
+
+try:
+    NUTRITION_PARSE_MODE = str(st.secrets.get("NUTRITION_PARSE_MODE", "openai") or "openai").strip().lower()
+except Exception:
+    NUTRITION_PARSE_MODE = "openai"
+if NUTRITION_PARSE_MODE not in {"fast", "balanced", "openai"}:
+    NUTRITION_PARSE_MODE = "openai"
 
 HEURISTIC_NUTRITION_PROFILE = {
     # Approximate per one serving unit
@@ -2829,96 +2836,10 @@ def validate_action_plan_output(result, daily_state):
             continue
         safe_lines.append(line)
     text = "\n".join(safe_lines).strip()
-    if not text:
-        text = "AI 응답이 비어 있습니다. 다시 생성해 주세요."
-    if not _is_action_oriented_text(text):
-        text = f"{text}\n{build_forced_next_action_from_state(daily_state)}".strip()
 
     result["current_analysis"] = humanize_action_text(analysis)
     result["next_actions"] = humanize_action_text(text)
     result["warnings"] = warns.strip()
-    return result
-
-
-def apply_calorie_consistency_guard(result, daily_state):
-    if not isinstance(result, dict):
-        return result
-
-    intake = (daily_state or {}).get("intake_today", {}) or {}
-    kcal_now = _safe_int(intake.get("kcal_est_today", 0), 0)
-    kcal_target = _safe_int(intake.get("kcal_target_today", DEFAULT_DAILY_KCAL_TARGET), DEFAULT_DAILY_KCAL_TARGET)
-    kcal_delta = kcal_now - kcal_target
-    workout = (daily_state or {}).get("workout_done", {}) or {}
-    worked_out_today = bool(workout.get("worked_out_today", False))
-    workout_minutes = _safe_int(workout.get("workout_minutes_today", 0), 0)
-
-    high_intake_absolute = kcal_now >= int(max(kcal_target + 150, 1900))
-    low_activity = (not worked_out_today) or (workout_minutes < 20)
-    overeat_risk = (kcal_delta >= 120) or (high_intake_absolute and low_activity)
-    if not overeat_risk:
-        return result
-
-    positive_tokens = [
-        "안정적", "컨트롤", "잘하셨", "좋습니다", "양호", "문제없", "완벽", "괜찮",
-    ]
-
-    analysis = str(result.get("current_analysis", "") or "")
-    actions = str(result.get("next_actions", "") or "")
-    warnings = str(result.get("warnings", "") or "").strip()
-
-    def has_positive(text):
-        low = str(text).lower()
-        return any(t in low for t in positive_tokens)
-
-    if has_positive(analysis):
-        analysis = (
-            f"현재 섭취량은 약 {kcal_now}kcal로, 일일 기준 {kcal_target}kcal 대비 "
-            f"{kcal_delta}kcal 초과입니다. 식사 패턴을 안정적이라고 보기 어렵습니다."
-        )
-
-    if has_positive(actions):
-        actions = (
-            f"지금부터 추가 섭취를 즉시 차단하십시오. 오늘 섭취량 {kcal_now}kcal는 "
-            f"일일 기준 {kcal_target}kcal를 {kcal_delta}kcal 초과했습니다. "
-            "남은 시간은 수분 섭취와 수면 복구에 집중하십시오."
-        )
-
-    if kcal_delta >= 0:
-        warn_line = (
-            f"일일 칼로리 기준({kcal_target}kcal) 대비 {kcal_delta}kcal 초과 상태입니다. "
-            "오늘은 추가 섭취 차단이 최우선입니다."
-        )
-    else:
-        warn_line = (
-            f"현재 섭취량 {kcal_now}kcal 자체가 높은 편이며 활동량({workout_minutes}분)이 낮습니다. "
-            "지금부터 추가 섭취를 차단하고 수면 복구에 집중하십시오."
-        )
-    if warn_line not in warnings:
-        warnings = f"{warnings}\n{warn_line}".strip() if warnings else warn_line
-
-    result["current_analysis"] = analysis
-    result["next_actions"] = actions
-    result["warnings"] = warnings
-    return result
-
-
-def apply_prev_xc_gap_warning(result, daily_state):
-    if not isinstance(result, dict):
-        return result
-    prev_feedback = (daily_state or {}).get("prev_xc_feedback", {}) or {}
-    gap = _safe_float(prev_feedback.get("gap_kg"), None)
-    if (gap is None) or (float(gap) <= 0):
-        return result
-
-    date_txt = str(prev_feedback.get("date") or "어제")
-    warn_line = (
-        f"{date_txt} xC 미달분이 {float(gap):.2f}kg 남아 있습니다. "
-        "오늘은 계획 이탈 없이 강행 모드로 진행하십시오."
-    )
-    warns = str(result.get("warnings", "") or "").strip()
-    if warn_line not in warns:
-        warns = f"{warns}\n{warn_line}".strip() if warns else warn_line
-    result["warnings"] = warns
     return result
 
 
@@ -3452,18 +3373,13 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 - xC와 스프린트 마일스톤 달성 확률을 높이는 방향으로 제안합니다.
 - 응원, 독려, 경고 톤은 상황에 맞게 자율적으로 사용하십시오.
 - 이 섹션의 최우선 목적은 분석 전시가 아니라 행동 변화 유도입니다.
+- persona_context의 캐릭터/말투/호칭 규칙을 일관되게 준수하십시오.
 
-[중요 원칙]
+[최소 가드레일]
 - daily_state 사실과 모순되지 마십시오.
-- 캘린더 원문이 아니라 available_slots를 사실로 사용하십시오.
-- available_slots에서 enabled=true 운동 슬롯이 하나도 없으면 신규 운동을 제안하지 말고, 하루 마무리 코칭만 제시하십시오.
-- 오늘 xC 수치를 반드시 본문에 명시하고, 행동 강도 판단의 근거로 사용하십시오.
-- 칼로리 판단은 intake_today.kcal_target_today 기준으로 수행하십시오.
-- intake_today.kcal_est_today가 kcal_target_today를 120kcal 이상 초과했거나, 절대 섭취량이 높은데 활동량이 낮으면 절대 '안정적/컨트롤 양호'라고 쓰지 마십시오.
-- 최근 로그는 D-2, D-1, D0(오늘)까지 모두 참고하십시오.
-- 코칭 문장은 최신 로그(특히 오늘의 가장 최근 이벤트)를 우선 근거로 작성하십시오.
-- 같은 고위험 식사 패턴이 2일 이상 반복되면 warnings에 강한 경고를 포함하십시오(모욕/인신공격 금지).
-- 로그가 적어도 판단을 포기하지 말고, 현재 데이터로 최선의 실행안을 제시하십시오.
+- 캘린더 원문이 아니라 available_slots만 사실로 사용하십시오.
+- late_mode=true 또는 enabled 슬롯이 없으면 오늘 남은 시간의 마무리 행동만 제시하십시오.
+- dinner_done=true일 때 '저녁 차단' 대신 '추가 섭취 차단/야식 차단' 표현을 사용하십시오.
 - Action Plan에서는 내일/다음날 계획을 제시하지 말고, 오늘 남은 시간 행동만 제시하십시오.
 - 코드 토큰(gym_quick_30 등)을 노출하지 마십시오.
 - json 객체 1개만 출력하십시오.
@@ -3525,8 +3441,6 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
         )
         result = json.loads(response.choices[0].message.content)
         result = validate_action_plan_output(result, daily_state)
-        result = apply_prev_xc_gap_warning(result, daily_state)
-        result = apply_calorie_consistency_guard(result, daily_state)
 
         now_kst2 = get_current_kst()
         result['generated_at'] = now_kst2.strftime('%H:%M')
@@ -3541,12 +3455,10 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
             "fallback_mode": "ai_error",
         }
         fallback = validate_action_plan_output(fallback, daily_state)
-        fallback = apply_prev_xc_gap_warning(fallback, daily_state)
-        fallback = apply_calorie_consistency_guard(fallback, daily_state)
         now_kst2 = get_current_kst()
         return {
             "current_analysis": fallback.get("current_analysis", "AI 호출 실패"),
-            "next_actions": fallback.get("next_actions", "데이터 부족으로 오늘은 판단 불가"),
+            "next_actions": fallback.get("next_actions", ""),
             "warnings": fallback.get("warnings", ""),
             "generated_at": now_kst2.strftime('%H:%M'),
             "generated_hours_left": 24 - now_kst2.hour
@@ -4655,18 +4567,31 @@ def parse_log_quick(category, user_text, log_time):
         return float(m.group(1)) if m else default
 
     if "섭취" in category:
-        # 속도 최적화: 키워드가 잡히면 휴리스틱 우선, 그 외에만 OpenAI 추정
+        # 기본값은 fast 모드(휴리스틱만)로 저장 지연을 최소화한다.
+        # 필요 시 secrets의 NUTRITION_PARSE_MODE=balanced/openai 로 전환 가능.
         h_fast = estimate_nutrition_heuristic(txt)
         fast_matched = bool((h_fast.get("matched", []) or []))
 
-        if fast_matched:
+        if NUTRITION_PARSE_MODE == "fast":
             est = h_fast
-            use_openai = False
+            nutrition_source = "heuristic_fast"
+        elif NUTRITION_PARSE_MODE == "openai" and OPENAI_API_KEY:
+            est = estimate_nutrition_from_text(txt, timeout_sec=OPENAI_NUTRITION_TIMEOUT_SEC)
+            used_openai = int(est.get("calories", 0) or 0) > 0
+            if not used_openai:
+                est = h_fast
+            nutrition_source = "openai" if used_openai else "heuristic"
+        elif fast_matched:
+            est = h_fast
             nutrition_source = "heuristic"
         else:
-            est = estimate_nutrition_from_text(txt, timeout_sec=OPENAI_NUTRITION_TIMEOUT_SEC) if OPENAI_API_KEY else {}
-            use_openai = int(est.get("calories", 0) or 0) > 0
-            nutrition_source = "openai" if use_openai else "heuristic"
+            if (NUTRITION_PARSE_MODE in {"balanced", "openai"}) and OPENAI_API_KEY:
+                est = estimate_nutrition_from_text(txt, timeout_sec=OPENAI_NUTRITION_TIMEOUT_SEC)
+                used_openai = int(est.get("calories", 0) or 0) > 0
+                nutrition_source = "openai" if used_openai else "heuristic"
+            else:
+                est = h_fast
+                nutrition_source = "heuristic"
 
         kcal = int(est.get("calories", 0) or 0)
         carbs = float(est.get("carbs", 0.0) or 0.0)
@@ -5075,8 +5000,8 @@ with tab1:
                     st.caption(f"🎯 xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.1f}kg")
 
                 with st.container(border=True):
-                    st.markdown(f"**📊 현재 상황:** {ap.get('current_analysis')}")
-                    st.markdown(f"**🚀 실질적 조언:**\n{ap.get('next_actions', '').replace(chr(10), chr(10)*2)}")
+                    st.markdown(f"**📊 Status:** {ap.get('current_analysis', '')}")
+                    st.markdown(f"**🚀 Do this:**\n{ap.get('next_actions', '').replace(chr(10), chr(10)*2)}")
                     if ap.get('warnings'):
                         st.error(f"⚠️ {ap['warnings']}")
         else:
