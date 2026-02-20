@@ -267,7 +267,7 @@ DAY_WRAPUP_START_HOUR = 21
 DAY_WRAPUP_START_MIN = 0  # 21:00 이후 신규 운동 제안 차단, 하루 마무리 모드
 WRAPUP_SWITCH_HOUR = 23
 WRAPUP_CACHE_VERSION = "v3"
-ACTION_PLAN_CACHE_VERSION = "v3"
+ACTION_PLAN_CACHE_VERSION = "v5"
 DAY_RESET_HOUR = 5
 DEFAULT_DAILY_KCAL_TARGET = 2000
 XC_BASELINE_KG = 0.30
@@ -304,17 +304,9 @@ URGENCY_THRESHOLDS = {
 
 
 HUMANIZE_MAP = {
-    # slot_id
-    "lunch_micro": "점심 30분",
-    "after_work_main": "퇴근 후 저녁(가능할 때)",
-    "weekend_main": "주말 메인",
-
-    # workout program codes
-    "gym_quick_30": "헬스장 30분 퀵 세션(러닝+코어 중심)",
-    "gym_full_120": "헬스장 2시간 풀 세션(유산소+근력)",
-    "outdoor_run_60": "야외 러닝 60분(심폐 중심)",
-    "walk_stairs": "걷기/계단 20분",
-    "tennis_90": "테니스 90분",
+    # slot_id (current)
+    "lunch_window": "점심 가능 시간",
+    "evening_window": "저녁 가능 시간",
 }
 
 BEVERAGE_TOKENS = {"콜라", "사이다", "주스", "음료"}
@@ -345,6 +337,25 @@ HEURISTIC_NUTRITION_PROFILE = {
     "밥": {"kcal": 300, "carbs": 67.0, "protein": 5.7, "fat": 0.5},
     "콜라": {"kcal": 108, "carbs": 27.0, "protein": 0.0, "fat": 0.0},  # 250ml
 }
+
+PITWALL_CARDIO_WEEKS = 8
+PITWALL_START_DATE_DEFAULT = "2026-02-21"
+PITWALL_RHR_START_DEFAULT = 60.0
+PITWALL_RHR_TARGET_DEFAULT = 55.0
+PITWALL_CARDIO_WEEK_TARGETS = [
+    (180, 210), (200, 230), (220, 260), (160, 200),
+    (230, 270), (250, 300), (240, 290), (150, 190),
+]
+PITWALL_HIIT_KEYS = (
+    "hiit", "인터벌", "하이록스", "tabata", "타바타", "sprint",
+)
+PITWALL_ZONE2_KEYS = (
+    "zone2", "zone 2", "조깅", "러닝", "달리기", "싸이클", "사이클",
+    "자전거", "incline", "걷기", "유산소",
+)
+PITWALL_STRENGTH_KEYS = (
+    "웨이트", "근력", "스쿼트", "벤치", "데드", "3대", "보디빌딩",
+)
 
 PERSONA_SECRET_KEY = "COACH_PERSONA_CONTEXT"
 
@@ -604,6 +615,72 @@ def get_daily_five_completion(date_key, sprint_id, df_action):
         "total": int(total),
         "completion_rate": completion_rate,
     }
+
+
+def build_daily_five_focus_snapshot(date_key, sprint_id, df_action):
+    out = {
+        "has_plan": False,
+        "completed": 0,
+        "total": 0,
+        "completion_rate": 0.0,
+        "remaining_count": 0,
+        "remaining_tasks": [],
+        "summary_line": "DF 계획 없음",
+        "signature": "no_plan",
+    }
+    if not sprint_id:
+        return out
+
+    daily_five = load_dailyfive_cache(date_key, sprint_id)
+    if not daily_five or "tasks" not in daily_five:
+        return out
+
+    tasks = list(daily_five.get("tasks", []) or [])
+    total = len(tasks)
+    out["has_plan"] = True
+    out["total"] = int(total)
+    if total <= 0:
+        out["summary_line"] = "DF 계획은 있으나 항목 없음"
+        out["signature"] = "plan_empty"
+        return out
+
+    if df_action is None or getattr(df_action, "empty", True) or ("Date" not in df_action.columns):
+        done_rows = [{"index": i, "task_id": str(t.get("task_id", "")).upper().strip(), "title": str(t.get("title", "")).strip(), "done": False} for i, t in enumerate(tasks, start=1)]
+    else:
+        today_logs = df_action[df_action["Date"] == date_key]
+        marks = collect_dailyfive_completion_marks(today_logs)
+        done_rows = build_dailyfive_done_rows(tasks, marks)
+
+    completed = sum(1 for d in done_rows if bool(d.get("done")))
+    completion_rate = float(completed / total) if total > 0 else 0.0
+    out["completed"] = int(completed)
+    out["completion_rate"] = completion_rate
+
+    remaining = []
+    for idx, t in enumerate(tasks, start=1):
+        dr = done_rows[idx - 1] if idx - 1 < len(done_rows) else {}
+        if bool(dr.get("done")):
+            continue
+        remaining.append({
+            "index": int(idx),
+            "task_id": str(t.get("task_id", f"task_{idx}") or f"task_{idx}").strip(),
+            "priority": _safe_int(t.get("priority", idx), idx),
+            "title": str(t.get("title", "") or "").strip(),
+        })
+    remaining.sort(key=lambda x: (x["priority"], x["index"]))
+    out["remaining_tasks"] = remaining[:5]
+    out["remaining_count"] = int(len(remaining))
+
+    if out["remaining_count"] > 0:
+        top = out["remaining_tasks"][0]
+        top_title = str(top.get("title", "") or "").strip()
+        out["summary_line"] = f"DF 진행 {completed}/{total}, 남은 {len(remaining)}개, 최우선: {top_title}"
+    else:
+        out["summary_line"] = f"DF 진행 {completed}/{total}, 오늘 DF 완료"
+
+    rem_ids = [str(x.get("task_id", "")) for x in out["remaining_tasks"]]
+    out["signature"] = f"{completed}/{total}:{'|'.join(rem_ids)}"
+    return out
 
 
 def get_current_kst():
@@ -1635,6 +1712,14 @@ def _safe_parse_ymd(s):
         return None
 
 
+def _align_date_to_saturday(d):
+    if d is None:
+        return None
+    # Monday=0 ... Saturday=5
+    delta = (5 - int(d.weekday())) % 7
+    return d + timedelta(days=delta)
+
+
 def _latest_weight_on_or_before(df_health, cutoff_date):
     if df_health is None or df_health.empty:
         return None
@@ -2019,14 +2104,11 @@ def build_available_slots(date_key, cal_evts):
     enabled 슬롯만 주기 위한 슬롯 생성기
     """
     dt = datetime.strptime(date_key, "%Y-%m-%d")
-    is_weekday = dt.weekday() < 5
-
     now_kst = get_current_kst()  # ✅ 현재 시각
     lunch_plan_cutoff = time(11, 0)  # ✅ 11시 넘으면 점심계획 포기
     day_wrapup_cutoff = time(DAY_WRAPUP_START_HOUR, DAY_WRAPUP_START_MIN)  # ✅ 21시 이후 신규 제안 차단
 
     # windows (KST aware)
-    day_start = datetime.combine(dt.date(), time(0,0), tzinfo=KST)
     lunch_start = datetime.combine(dt.date(), time(11,30), tzinfo=KST)
     lunch_end = datetime.combine(dt.date(), time(13,0), tzinfo=KST)
     evening_start = datetime.combine(dt.date(), time(19,0), tzinfo=KST)
@@ -2061,52 +2143,32 @@ def build_available_slots(date_key, cal_evts):
     day_wrapup_mode = is_past_date or ((now_kst.date() == dt.date()) and (now_kst.time() >= day_wrapup_cutoff))
 
     slots = []
-
-    if is_weekday:
-        slots.append({
-            "slot_id": "lunch_micro",
-            "label": "점심 30분",
-            "start": lunch_start.strftime("%H:%M"),
-            "end": lunch_end.strftime("%H:%M"),
-            "enabled": (not lunch_blocked) and (not lunch_too_late),
-            "allowed_types": ["walk_stairs", "gym_quick_30"],
-            "notes": "이동 15분+샤워 30분 고려 시 운동 30분만 가능",
-            "reason_disabled": 
-                ("점심 태그/점심시간 일정(Termin)으로 막힘" if lunch_blocked else
-                "해당 날짜는 이미 종료되어 신규 제안을 차단" if is_past_date else
-                "11시 이후라 점심시간 계획은 폐기" if lunch_too_late else
-            ""
-        )
+    slots.append({
+        "slot_id": "lunch_window",
+        "label": "점심 가능 시간",
+        "start": lunch_start.strftime("%H:%M"),
+        "end": lunch_end.strftime("%H:%M"),
+        "enabled": (not lunch_blocked) and (not lunch_too_late),
+        "notes": "캘린더와 현재 시각 기준으로 점심 실행 가능 여부만 제공합니다.",
+        "reason_disabled":
+            ("점심 태그/점심시간 일정(Termin)으로 막힘" if lunch_blocked else
+             "해당 날짜는 이미 종료되어 신규 제안을 차단" if is_past_date else
+             "11시 이후라 점심시간 계획은 폐기" if lunch_too_late else
+             "")
     })
-        slots.append({
-            "slot_id": "after_work_main",
-            "label": "저녁 메인",
-            "start": "19:00",
-            "end": "23:59",
-            "enabled": (not evening_blocked) and (not day_wrapup_mode),
-            "allowed_types": ["gym_full_120", "outdoor_run_60"],
-            "notes": "저녁 약속 또는 21:00 이후에는 신규 운동 제안 불가(일부 가능 없음)",
-            "reason_disabled":
-                ("저녁 태그 또는 19:00~23:59 일정(Termin)과 겹쳐서 저녁 운동 불가" if evening_blocked else
-                 "해당 날짜는 이미 종료되어 신규 제안을 차단" if is_past_date else
-                 "21:00 이후에는 하루 마무리 모드로 전환되어 신규 운동 제안을 차단" if day_wrapup_mode else
-                 "")
-        })
-    else:
-        # 주말은 일단 여유 슬롯 1개(필요 최소)
-        slots.append({
-            "slot_id": "weekend_main",
-            "label": "주말 메인",
-            "start": "09:00",
-            "end": "21:00",
-            "enabled": not day_wrapup_mode,
-            "allowed_types": ["gym_full_120", "outdoor_run_60", "tennis_90"],
-            "notes": "주말도 21:00 이후에는 신규 운동 제안 대신 마무리 코칭",
-            "reason_disabled":
-                ("해당 날짜는 이미 종료되어 신규 제안을 차단" if is_past_date else
-                 "21:00 이후에는 하루 마무리 모드로 전환되어 신규 운동 제안을 차단" if day_wrapup_mode else
-                 "")
-        })
+    slots.append({
+        "slot_id": "evening_window",
+        "label": "저녁 가능 시간",
+        "start": "19:00",
+        "end": "23:59",
+        "enabled": (not evening_blocked) and (not day_wrapup_mode),
+        "notes": "캘린더와 현재 시각 기준으로 저녁 실행 가능 여부만 제공합니다.",
+        "reason_disabled":
+            ("저녁 태그 또는 19:00~23:59 일정(Termin)과 겹쳐서 저녁 실행 불가" if evening_blocked else
+             "해당 날짜는 이미 종료되어 신규 제안을 차단" if is_past_date else
+             "21:00 이후에는 하루 마무리 모드로 전환되어 신규 운동 제안을 차단" if day_wrapup_mode else
+             "")
+    })
 
     return slots
 
@@ -2115,7 +2177,11 @@ def slots_to_compact_text(slots):
     lines = []
     for s in slots:
         ok = "ENABLED" if s["enabled"] else "DISABLED"
-        lines.append(f"- {s['slot_id']}({s['start']}-{s['end']}): {ok} | {','.join(s['allowed_types'])}")
+        rsn = str(s.get("reason_disabled", "") or "").strip()
+        if rsn:
+            lines.append(f"- {s['slot_id']}({s['start']}-{s['end']}): {ok} | {rsn}")
+        else:
+            lines.append(f"- {s['slot_id']}({s['start']}-{s['end']}): {ok}")
     return "\n".join(lines)
 
 
@@ -2304,6 +2370,348 @@ def summarize_yesterday_workout_review(df_action, date_key):
     else:
         out["intensity_hint"] = "low"
     return out
+
+
+def _html_escape(v):
+    s = str(v or "")
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _pitwall_resolve_cardio_minutes(row):
+    mins = 0
+    try:
+        js = _safe_json_obj(row.get("AI_Analysis_JSON", "{}"))
+        mins = _safe_int(js.get("time", js.get("duration", 0)), 0)
+    except:
+        mins = 0
+    if mins <= 0:
+        mins = _extract_minutes_from_text(row.get("User_Input", ""))
+    return max(0, int(mins))
+
+
+def _pitwall_classify_cardio_kind(row, minutes):
+    txt = " ".join(
+        [
+            str(row.get("Category", "") or ""),
+            str(row.get("User_Input", "") or ""),
+            str(row.get("AI_Analysis_JSON", "") or ""),
+        ]
+    ).lower()
+    if any(k in txt for k in PITWALL_HIIT_KEYS):
+        return "hiit"
+    has_zone2 = any(k in txt for k in PITWALL_ZONE2_KEYS)
+    has_strength = any(k in txt for k in PITWALL_STRENGTH_KEYS)
+    if has_zone2:
+        return "zone2"
+    if has_strength:
+        return ""
+    if int(minutes or 0) >= 20:
+        return "zone2"
+    return ""
+
+
+def build_pitwall_cardio_experiment(
+    df_action,
+    df_health=None,
+    start_date=None,
+    weeks=PITWALL_CARDIO_WEEKS,
+    rhr_start=PITWALL_RHR_START_DEFAULT,
+    rhr_target=PITWALL_RHR_TARGET_DEFAULT,
+):
+    today = get_current_kst().date()
+    if isinstance(start_date, str):
+        start_date = _safe_parse_ymd(start_date)
+    if start_date is None:
+        start_date = today
+    total_weeks = max(1, int(weeks or PITWALL_CARDIO_WEEKS))
+    end_date = start_date + timedelta(days=(total_weeks * 7 - 1))
+
+    targets = list(PITWALL_CARDIO_WEEK_TARGETS)
+    if len(targets) < total_weeks:
+        last = targets[-1] if targets else (180, 210)
+        targets.extend([last] * (total_weeks - len(targets)))
+
+    day_stats = {}
+    if df_action is not None and (not df_action.empty):
+        for _, r in df_action.iterrows():
+            cat = str(r.get("Category", "") or "")
+            if "운동" not in cat:
+                continue
+            d = _safe_parse_ymd(r.get("Date", ""))
+            if d is None or d < start_date or d > end_date:
+                continue
+            mins = _pitwall_resolve_cardio_minutes(r)
+            kind = _pitwall_classify_cardio_kind(r, mins)
+            if not kind:
+                continue
+            key = d.strftime("%Y-%m-%d")
+            if key not in day_stats:
+                day_stats[key] = {"zone2_min": 0, "hiit_min": 0, "hiit_sessions": 0}
+            if kind == "hiit":
+                day_stats[key]["hiit_sessions"] += 1
+                day_stats[key]["hiit_min"] += int(mins)
+            else:
+                day_stats[key]["zone2_min"] += int(mins)
+
+    health = pd.DataFrame()
+    if df_health is not None and (not df_health.empty):
+        health = df_health.copy()
+        if "Date" in health.columns:
+            parsed = pd.to_datetime(health["Date"], errors="coerce")
+            if parsed.isna().any():
+                parsed = parsed.where(~parsed.isna(), health["Date"].astype(str).map(lambda x: parse_korean_datetime(x)))
+            health["Date_Key"] = parsed.apply(lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else "")
+        else:
+            health["Date_Key"] = ""
+        health["RHR_num"] = pd.to_numeric(health.get("RHR", 0), errors="coerce")
+        health = health[(health["Date_Key"] >= start_date.strftime("%Y-%m-%d")) & (health["Date_Key"] <= end_date.strftime("%Y-%m-%d"))]
+
+    weeks_out = []
+    total_z2 = 0
+    z2_weeks_done = 0
+    hiit_weeks_done = 0
+    current_week_rhr_avg = None
+
+    for i in range(total_weeks):
+        ws = start_date + timedelta(days=i * 7)
+        we = ws + timedelta(days=6)
+        target_min, target_max = targets[i]
+        week_z2 = 0
+        week_hiit_sessions = 0
+        days = []
+        for d in range(7):
+            dt = ws + timedelta(days=d)
+            k = dt.strftime("%Y-%m-%d")
+            stt = day_stats.get(k, {})
+            z2m = _safe_int(stt.get("zone2_min", 0), 0)
+            hs = _safe_int(stt.get("hiit_sessions", 0), 0)
+            hm = _safe_int(stt.get("hiit_min", 0), 0)
+            week_z2 += z2m
+            week_hiit_sessions += hs
+            days.append(
+                {
+                    "date": k,
+                    "label": dt.strftime("%a"),
+                    "zone2_min": z2m,
+                    "hiit_sessions": hs,
+                    "hiit_min": hm,
+                    "is_today": dt == today,
+                    "is_future": dt > today,
+                }
+            )
+
+        total_z2 += week_z2
+        if week_z2 >= target_min:
+            z2_weeks_done += 1
+        if week_hiit_sessions >= 1:
+            hiit_weeks_done += 1
+
+        z2_left = max(0, int(target_min - week_z2))
+        hiit_left = max(0, int(1 - week_hiit_sessions))
+        if ws > today:
+            week_hint = "upcoming"
+        else:
+            hints = []
+            if z2_left > 0:
+                hints.append(f"{z2_left}m Z2 left")
+            if hiit_left > 0:
+                hints.append("need HIIT")
+            week_hint = " · ".join(hints) if hints else "target hit"
+
+        ws_key = ws.strftime("%Y-%m-%d")
+        we_key = we.strftime("%Y-%m-%d")
+        rhr_avg = None
+        if not health.empty:
+            wk_h = health[(health["Date_Key"] >= ws_key) & (health["Date_Key"] <= we_key)]["RHR_num"].dropna()
+            if not wk_h.empty:
+                rhr_avg = float(wk_h.mean())
+
+        is_current = ws <= today <= we
+        if is_current and (rhr_avg is not None):
+            current_week_rhr_avg = float(rhr_avg)
+
+        weeks_out.append(
+            {
+                "index": i + 1,
+                "start": ws,
+                "end": we,
+                "target_min": int(target_min),
+                "target_max": int(target_max),
+                "zone2_total": int(week_z2),
+                "hiit_sessions": int(week_hiit_sessions),
+                "rhr_avg": (round(float(rhr_avg), 1) if rhr_avg is not None else None),
+                "days": days,
+                "hint": week_hint,
+                "is_current": is_current,
+            }
+        )
+
+    current_week = int((today - start_date).days // 7 + 1)
+    current_week = max(1, min(total_weeks, current_week))
+    total_target = sum(t[0] for t in targets[:total_weeks])
+    total_target_hi = sum(t[1] for t in targets[:total_weeks])
+
+    return {
+        "title": f"RHR {int(round(float(rhr_start)))} -> {int(round(float(rhr_target)))} Experiment",
+        "subtitle": f"{total_weeks}-week zone2 + HIIT plan",
+        "start_date": start_date,
+        "end_date": end_date,
+        "rhr_start": float(rhr_start),
+        "rhr_target": float(rhr_target),
+        "current_week_rhr_avg": (round(float(current_week_rhr_avg), 1) if current_week_rhr_avg is not None else None),
+        "current_week": current_week,
+        "weeks_total": total_weeks,
+        "total_zone2": int(total_z2),
+        "target_zone2_min": int(total_target),
+        "target_zone2_max": int(total_target_hi),
+        "z2_weeks_done": int(z2_weeks_done),
+        "hiit_weeks_done": int(hiit_weeks_done),
+        "weeks": weeks_out,
+    }
+
+
+def render_pitwall_cardio_experiment(board):
+    if not board:
+        return
+
+    hdr_date = (
+        f"{board['start_date'].strftime('%b %d')} - "
+        f"{board['end_date'].strftime('%b %d, %Y')}"
+    )
+    style = """
+<style>
+.pwx-wrap { background:#070d18; color:#dbeafe; border:1px solid #1b2638; border-radius:18px; padding:14px; margin-top:8px; }
+.pwx-title { font-size:48px; font-weight:800; color:#f8fafc; margin:0; line-height:1.02; letter-spacing:-0.8px; }
+.pwx-sub { color:#8fa8c7; font-size:14px; margin-top:6px; margin-bottom:10px; }
+.pwx-sub-link { color:#61a5fa; font-weight:700; margin-left:3px; }
+.pwx-metrics { display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); background:#0d1627; border:1px solid #1f2d46; border-radius:12px; margin-bottom:10px; overflow:hidden; }
+.pwx-metric { padding:9px 10px; border-right:1px solid #1b273d; }
+.pwx-metric:last-child { border-right:none; }
+.pwx-metric-k { color:#8ba0bd; font-size:11px; letter-spacing:1px; text-transform:uppercase; font-weight:700; margin-bottom:3px; }
+.pwx-metric-v { color:#f8fafc; font-size:34px; font-weight:800; line-height:1; letter-spacing:-0.8px; }
+.pwx-legend { display:flex; gap:14px; color:#9fb0c6; font-size:13px; margin:4px 0 8px; }
+.pwx-dot { width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:6px; vertical-align:middle; }
+.pwx-dot-z2 { background:#4ade80; } .pwx-dot-hiit { background:#fb7185; } .pwx-dot-today { border:1px solid #60a5fa; background:transparent; }
+.pwx-week { border:1px solid #172338; border-radius:12px; padding:10px; margin-top:8px; background:#0a1324; display:grid; grid-template-columns:150px 1fr 190px; gap:10px; align-items:center; }
+.pwx-week-current { border-color:#4a89dd; box-shadow:0 0 0 1px rgba(96,165,250,0.45) inset; }
+.pwx-week-muted { opacity:0.42; filter:saturate(0.8); }
+.pwx-week-name { font-size:30px; font-weight:800; color:#e2e8f0; margin-bottom:2px; line-height:1; letter-spacing:-0.6px; }
+.pwx-week-date { color:#90a3bf; font-size:12px; }
+.pwx-days { display:grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap:6px; }
+.pwx-day { background:#0a111f; border:1px solid #1a2638; border-radius:8px; min-height:54px; display:flex; flex-direction:column; justify-content:center; align-items:center; padding:3px; }
+.pwx-day-l { color:#7f8fa8; font-size:12px; margin-bottom:2px; }
+.pwx-day-v { color:#cbd5e1; font-size:18px; font-weight:700; letter-spacing:-0.2px; line-height:1.1; }
+.pwx-day-z2 { background:rgba(74,222,128,0.12); border-color:#22c55e; }
+.pwx-day-hiit { background:rgba(251,113,133,0.14); border-color:#fb7185; }
+.pwx-day-today { box-shadow:0 0 0 2px rgba(96,165,250,0.55) inset; }
+.pwx-day-future { opacity:0.5; }
+.pwx-right { text-align:right; }
+.pwx-right-v { color:#f8fafc; font-size:25px; font-weight:800; letter-spacing:-0.4px; }
+.pwx-right-bar { margin-top:6px; height:6px; width:100%; border-radius:999px; background:#162236; overflow:hidden; }
+.pwx-right-fill { height:100%; background:#60a5fa; border-radius:999px; }
+.pwx-right-h { color:#60a5fa; font-size:12px; margin-top:6px; }
+.pwx-right-rhr { font-size:12px; margin-top:6px; color:#9fb0c6; }
+.pwx-right-rhr-good { color:#34d399; }
+.pwx-right-rhr-warn { color:#fca5a5; }
+@media (max-width: 980px) {
+  .pwx-title { font-size:42px; }
+  .pwx-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .pwx-week { grid-template-columns:1fr; }
+  .pwx-right { text-align:left; }
+}
+</style>
+"""
+
+    html_parts = [style, '<div class="pwx-wrap">']
+    html_parts.append(f'<h3 class="pwx-title">{_html_escape(board.get("title", ""))}</h3>')
+    wk_rhr = board.get("current_week_rhr_avg")
+    wk_rhr_text = f"" if wk_rhr is not None else ""
+    html_parts.append(
+        f'<div class="pwx-sub">{_html_escape(board.get("subtitle", ""))} · '
+        f'{_html_escape(hdr_date)}{_html_escape(wk_rhr_text)} · <span class="pwx-sub-link">Dashboard</span></div>'
+    )
+    html_parts.append('<div class="pwx-metrics">')
+    top_cards = [
+        ("TOTAL Z2", f"{_safe_int(board.get('total_zone2', 0), 0)}m"),
+        ("TARGET", f"{_safe_int(board.get('target_zone2_min', 0), 0)}m"),
+        ("Z2 WEEKS", f"{_safe_int(board.get('z2_weeks_done', 0), 0)}/{_safe_int(board.get('weeks_total', 8), 8)}"),
+        ("HIIT WEEKS", f"{_safe_int(board.get('hiit_weeks_done', 0), 0)}/{_safe_int(board.get('weeks_total', 8), 8)}"),
+        ("WEEK", f"{_safe_int(board.get('current_week', 1), 1)} of {_safe_int(board.get('weeks_total', 8), 8)}"),
+    ]
+    for k, v in top_cards:
+        html_parts.append(f'<div class="pwx-metric"><div class="pwx-metric-k">{k}</div><div class="pwx-metric-v">{v}</div></div>')
+    html_parts.append("</div>")
+    html_parts.append(
+        '<div class="pwx-legend">'
+        '<span><i class="pwx-dot pwx-dot-z2"></i>Zone 2</span>'
+        '<span><i class="pwx-dot pwx-dot-hiit"></i>HIIT</span>'
+        '<span><i class="pwx-dot pwx-dot-today"></i>Today</span>'
+        "</div>"
+    )
+
+    rhr_target = _safe_float(board.get("rhr_target"), PITWALL_RHR_TARGET_DEFAULT)
+    for wk in (board.get("weeks", []) or []):
+        row_cls = "pwx-week pwx-week-current" if wk.get("is_current") else "pwx-week pwx-week-muted"
+        html_parts.append(f'<div class="{row_cls}">')
+        html_parts.append(
+            '<div>'
+            f'<div class="pwx-week-name">Week {int(wk.get("index", 0))}</div>'
+            f'<div class="pwx-week-date">{wk["start"].strftime("%b %d")} - {wk["end"].strftime("%b %d")}</div>'
+            '</div>'
+        )
+
+        html_parts.append('<div class="pwx-days">')
+        for d in (wk.get("days", []) or []):
+            c = ["pwx-day"]
+            if d.get("zone2_min", 0) > 0:
+                c.append("pwx-day-z2")
+            if d.get("hiit_sessions", 0) > 0:
+                c.append("pwx-day-hiit")
+            if d.get("is_today"):
+                c.append("pwx-day-today")
+            if d.get("is_future"):
+                c.append("pwx-day-future")
+
+            value = ""
+            if d.get("hiit_sessions", 0) > 0:
+                hm = _safe_int(d.get("hiit_min", 0), 0)
+                value = f"HIIT {hm}m" if hm > 0 else "HIIT"
+            elif d.get("zone2_min", 0) > 0:
+                value = f"{_safe_int(d.get('zone2_min', 0), 0)}m"
+
+            html_parts.append(
+                f'<div class="{" ".join(c)}">'
+                f'<div class="pwx-day-l">{_html_escape(d.get("label", ""))}</div>'
+                f'<div class="pwx-day-v">{_html_escape(value)}</div>'
+                "</div>"
+            )
+        html_parts.append("</div>")
+
+        target_min = max(1, int(wk.get("target_min", 0)))
+        achieved = max(0, int(wk.get("zone2_total", 0)))
+        bar_pct = int(clamp((achieved / target_min) * 100.0, 0.0, 100.0))
+        rhr_avg = wk.get("rhr_avg")
+        rhr_cls = "pwx-right-rhr"
+        if rhr_avg is not None:
+            if float(rhr_avg) <= rhr_target:
+                rhr_cls += " pwx-right-rhr-good"
+            else:
+                rhr_cls += " pwx-right-rhr-warn"
+            rhr_txt = f"RHR avg {float(rhr_avg):.1f} (target {rhr_target:.0f})"
+        else:
+            rhr_txt = "RHR avg -"
+        html_parts.append(
+            '<div class="pwx-right">'
+            f'<div class="pwx-right-v">{achieved}m / {int(wk.get("target_min", 0))}-{int(wk.get("target_max", 0))}m</div>'
+            f'<div class="pwx-right-bar"><div class="pwx-right-fill" style="width:{bar_pct}%"></div></div>'
+            f'<div class="pwx-right-h">{_html_escape(wk.get("hint", ""))}</div>'
+            f'<div class="{rhr_cls}">{_html_escape(rhr_txt)}</div>'
+            "</div>"
+        )
+        html_parts.append("</div>")
+
+    html_parts.append("</div>")
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
 
 
 def infer_training_mode(yesterday_workout_review, available_slots):
@@ -2509,8 +2917,8 @@ def compute_xc(daily_target, daily_state):
         reasons.append(f"{v:+.2f}:sprint_ahead_relief")
 
     enabled_count = sum(1 for s in slots if s.get("enabled"))
-    after_work_open = _slot_enabled(slots, "after_work_main")
-    lunch_open = _slot_enabled(slots, "lunch_micro")
+    after_work_open = _slot_enabled(slots, "evening_window")
+    lunch_open = _slot_enabled(slots, "lunch_window")
 
     if after_work_open and not cf.get("dinner_appointment", False):
         v = float(w.get("slot_evening_open_push", 0.10))
@@ -2743,6 +3151,12 @@ def build_daily_state(
 
 
 def _slot_enabled(slots, slot_id):
+    if isinstance(slot_id, (list, tuple, set)):
+        targets = {str(x) for x in slot_id}
+        for s in (slots or []):
+            if str(s.get("slot_id")) in targets:
+                return bool(s.get("enabled"))
+        return False
     for s in (slots or []):
         if s.get("slot_id") == slot_id:
             return bool(s.get("enabled"))
@@ -2855,7 +3269,7 @@ def format_ai_error_message(e):
     return f"AI 호출 오류: {msg[:220]}"
 
 
-def build_rule_based_action_plan(daily_state):
+def build_rule_based_action_plan(daily_state, daily_five_focus=None):
     lines = [
         "AI 응답 생성에 실패했습니다. 1-2분 후 다시 생성해 주세요.",
         f"North Star: {NORTH_STAR_OBJECTIVE}",
@@ -2865,6 +3279,13 @@ def build_rule_based_action_plan(daily_state):
     xc = (daily_state.get("xc", {}) or {}).get("xc_value_kg")
     if xc is not None:
         lines.append(f"참고 지표: 오늘 xC는 {float(xc):.1f}kg 기준입니다.")
+    df_focus = daily_five_focus or {}
+    if bool(df_focus.get("has_plan")):
+        lines.append(f"DF 상태: {str(df_focus.get('summary_line', '')).strip()}")
+        rem = list(df_focus.get("remaining_tasks", []) or [])
+        if rem:
+            top = rem[0]
+            lines.append(f"우선 DF: ({top.get('task_id','')}) {top.get('title','')}")
     return "\n".join(lines)
 
 
@@ -3068,11 +3489,26 @@ def get_today_intake_stats(df_action, date_key):
     return {"calories": int(total_cal), "meals": int(n_meals)}
 
 
+def filter_out_df_logs(df_action):
+    if df_action is None or getattr(df_action, "empty", True):
+        return df_action
+    if "Category" not in df_action.columns:
+        return df_action
+    try:
+        cat = df_action["Category"].astype(str).str.upper()
+        return df_action[~cat.str.contains("DF", na=False)].copy()
+    except Exception:
+        return df_action
+
+
 def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=False):
     now_kst = get_current_kst()
     mission = calculate_mission_status(current_weight)
 
     today_date_key = (now_kst - timedelta(days=1)).strftime('%Y-%m-%d') if now_kst.hour < 5 else now_kst.strftime('%Y-%m-%d')
+
+    # DF 체크 로그는 코칭 품질보다는 진행률 집계용이므로 context에서 제외해 캐시 변동을 줄인다.
+    df_action = filter_out_df_logs(df_action)
 
     five_days_ago = (datetime.strptime(today_date_key, '%Y-%m-%d') - timedelta(days=5)).strftime('%Y-%m-%d')
     recent_logs = df_action[df_action['Date'] >= five_days_ago].copy()
@@ -3183,7 +3619,7 @@ Output JSON: {{
         }
 
 @st.cache_data(ttl=900)
-def ai_generate_action_plan_cached(hrv, rhr, weight, date_key, slots_key, activity_sig, today_activities, available_slots, plan_version):
+def ai_generate_action_plan_cached(hrv, rhr, weight, date_key, slots_key, activity_sig, today_activities, available_slots, plan_version, daily_five_sig):
     result = ai_generate_action_plan_internal(
         hrv, rhr, weight,
         list(today_activities or []),
@@ -3264,11 +3700,27 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
         "total": 0,
         "completion_rate": 0.0,
     }
-    try:
-        if sprint:
-            daily_five_status = get_daily_five_completion(date_key, sprint["sprint_id"], df_action)
-    except:
-        pass
+    daily_five_focus = {
+        "has_plan": False,
+        "completed": 0,
+        "total": 0,
+        "completion_rate": 0.0,
+        "remaining_count": 0,
+        "remaining_tasks": [],
+        "summary_line": "DF 계획 없음",
+        "signature": "no_plan",
+    }
+    if sprint:
+        try:
+            daily_five_focus = build_daily_five_focus_snapshot(date_key, sprint["sprint_id"], df_action)
+            daily_five_status = {
+                "has_plan": bool(daily_five_focus.get("has_plan", False)),
+                "completed": int(daily_five_focus.get("completed", 0)),
+                "total": int(daily_five_focus.get("total", 0)),
+                "completion_rate": float(daily_five_focus.get("completion_rate", 0.0)),
+            }
+        except:
+            pass
 
     daily_five_plan = {}
     try:
@@ -3276,18 +3728,6 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
             daily_five_plan = load_dailyfive_cache(date_key, sprint["sprint_id"]) or {}
     except:
         daily_five_plan = {}
-
-    try:
-        if sprint:
-            persist_daily_sprint_progress(
-                date_key=date_key,
-                sprint_id=sprint["sprint_id"],
-                daily_state=daily_state,
-                daily_five_status=daily_five_status,
-                sprint_progress=progress,
-            )
-    except:
-        pass
 
     sprint_status = {
         "has_sprint": bool(progress),
@@ -3337,6 +3777,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
     daily_state_json = json.dumps(daily_state, ensure_ascii=False, indent=2)
     sprint_status_json = json.dumps(sprint_status, ensure_ascii=False, indent=2)
     daily_five_status_json = json.dumps(daily_five_status, ensure_ascii=False, indent=2)
+    daily_five_focus_json = json.dumps(daily_five_focus, ensure_ascii=False, indent=2)
     yesterday_workout_review = daily_state.get("yesterday_workout_review", {}) or {}
     yesterday_workout_review_json = json.dumps(yesterday_workout_review, ensure_ascii=False, indent=2)
     prev_xc_feedback = daily_state.get("prev_xc_feedback", {}) or {}
@@ -3381,7 +3822,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 - late_mode=true 또는 enabled 슬롯이 없으면 오늘 남은 시간의 마무리 행동만 제시하십시오.
 - dinner_done=true일 때 '저녁 차단' 대신 '추가 섭취 차단/야식 차단' 표현을 사용하십시오.
 - Action Plan에서는 내일/다음날 계획을 제시하지 말고, 오늘 남은 시간 행동만 제시하십시오.
-- 코드 토큰(gym_quick_30 등)을 노출하지 마십시오.
+- 운동 유형은 하드코딩된 코드/템플릿 대신 캘린더와 오늘 로그를 근거로 자율 제안하십시오.
 - json 객체 1개만 출력하십시오.
 
 [COACHING_CONTEXT]
@@ -3415,6 +3856,10 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 
 [DAILY_FIVE_STATUS]
 {daily_five_status_json}
+
+[DAILY_FIVE_FOCUS]
+{daily_five_focus_json}
+- remaining_count > 0 이면 next_actions에 남은 DF 중 1개를 우선순위로 직접 지목하십시오.
 
 [DAILY_STATE]
 {daily_state_json}
@@ -3450,7 +3895,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
         print("action plan error:", e)
         fallback = {
             "current_analysis": "AI 호출 실패로 규칙 기반 플랜으로 전환했습니다.",
-            "next_actions": build_rule_based_action_plan(daily_state),
+            "next_actions": build_rule_based_action_plan(daily_state, daily_five_focus=daily_five_focus),
             "warnings": format_ai_error_message(e),
             "fallback_mode": "ai_error",
         }
@@ -3464,7 +3909,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
             "generated_hours_left": 24 - now_kst2.hour
         }
 
-def ai_generate_action_plan(hrv, rhr, weight, full_context, today_activities, available_slots):
+def ai_generate_action_plan(hrv, rhr, weight, full_context, today_activities, available_slots, daily_five_sig=""):
     slots_key = json.dumps(available_slots, ensure_ascii=False, sort_keys=True)
     activity_items = list(today_activities or [])
     activity_sig = "|".join(activity_items[:20])
@@ -3478,6 +3923,7 @@ def ai_generate_action_plan(hrv, rhr, weight, full_context, today_activities, av
             tuple(activity_items),
             available_slots,
             ACTION_PLAN_CACHE_VERSION,
+            str(daily_five_sig or ""),
         )
     except Exception:
         # 캐시 우회 1회 실행 (실패 결과 비캐시)
@@ -3759,14 +4205,7 @@ def _pick_next_action_from_slots(enabled_slots):
     s = enabled_slots[0]
     label = str(s.get("label") or s.get("slot_id") or "다음 가용 슬롯")
     start = str(s.get("start") or "")
-    allowed = list(s.get("allowed_types", []) or [])
-    action_txt = ""
-    if allowed:
-        first = str(allowed[0] or "")
-        action_txt = HUMANIZE_MAP.get(first, humanize_action_text(first))
-    if action_txt:
-        return f"내일 {label}({start})에 {action_txt} 1회를 먼저 실행하십시오."
-    return f"내일 {label}({start})에 운동 1회를 먼저 실행하십시오."
+    return f"내일 {label}({start})에 실행할 운동 1개를 확정하고 먼저 수행하십시오."
 
 
 def summarize_today_meal_timeline(df_action, date_key):
@@ -4735,10 +5174,12 @@ def handle_log_form_submit():
         ])
 
         try:
-            d_mission = get_mission_date_key()
-            invalidate_realtime_plan_cache(date_key)
-            if d_mission != date_key:
-                invalidate_realtime_plan_cache(d_mission)
+            # DF 체크 저장은 Action Plan 즉시 재생성 필요도가 낮아 캐시 무효화를 생략한다.
+            if str(category or "").upper() != "DF":
+                d_mission = get_mission_date_key()
+                invalidate_realtime_plan_cache(date_key)
+                if d_mission != date_key:
+                    invalidate_realtime_plan_cache(d_mission)
         except Exception as _cache_e:
             print("realtime cache invalidation error:", _cache_e)
 
@@ -4800,6 +5241,8 @@ with tab1:
 
             # 2) 오늘 액션 로그
             today_logs = df_a[df_a['Date'] == date_key]
+            if "Category" in today_logs.columns:
+                today_logs = today_logs[~today_logs["Category"].astype(str).str.upper().str.contains("DF", na=False)]
             today_acts = [f"[{r['Action_Time']}] {r['Category']}: {r['User_Input']}" for _, r in today_logs.iterrows()]
 
             # 3) Health 최신값 (w_c 먼저!)
@@ -4987,12 +5430,20 @@ with tab1:
                 )
                 render_wrapup_block(wrapup_kind, wrapup, xc=xc)
             else:
+                daily_five_sig = ""
+                try:
+                    if sprint:
+                        df_focus = build_daily_five_focus_snapshot(date_key, sprint["sprint_id"], df_a)
+                        daily_five_sig = str(df_focus.get("signature", "") or "")
+                except Exception:
+                    daily_five_sig = ""
                 # ✅ [FIX] Action Plan 호출: calendar를 logs에 섞어 넣지 말고 slots로 전달
                 ap = ai_generate_action_plan(
                     hrv_c, rhr_c, w_c,
                     rt_ctx,
                     today_acts,
-                    available_slots
+                    available_slots,
+                    daily_five_sig=daily_five_sig,
                 )
 
                 st.markdown(f"""<h3 style="margin-bottom: 10px;">⚡ Action Plan <span class="time-badge">{ap.get('generated_at', now_kst.strftime('%H:%M'))} 기준</span></h3>""", unsafe_allow_html=True)
@@ -5406,52 +5857,91 @@ with tab3:
 # =========================================================
 with tab4:
     st.markdown("## 🏎️ The Pit Wall")
-    st.info("개발자 도구 영역")
+    st.caption("Custom 8-week cardio experiment board")
 
-    st.write("server now:", datetime.now())
-    st.write("kst now:", get_current_kst())
-
-    _s = None
+    pit_start = None
     try:
-        _s = get_active_sprint()
+        pit_start_cfg = str(st.secrets.get("PITWALL_START_DATE", PITWALL_START_DATE_DEFAULT) or PITWALL_START_DATE_DEFAULT).strip()
+        pit_start = _safe_parse_ymd(pit_start_cfg)
     except:
-        _s = None
+        pit_start = None
+    pit_start = _align_date_to_saturday(pit_start)
 
-    if _s:
-        st.write("sprint start:", _s['start_date'])
-    else:
-        st.write("sprint start:", "(no active sprint)")
-
-    st.write("debug mode:", DEBUG_MODE)
-
-    if DEBUG_MODE:
+    if pit_start is None:
         try:
-            date_key_dbg = get_mission_date_key()
-            now_kst_dbg = get_current_kst()
-            df_action_dbg = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
-            cal_dbg = get_today_calendar_events(date_key_dbg)
-            slots_dbg = build_available_slots(date_key_dbg, cal_dbg)
-            sprint_dbg = get_active_sprint()
-            progress_dbg = None
-            if sprint_dbg:
-                df_health_dbg = pd.DataFrame(get_db_connection("Health_Log").get_all_records())
-                current_w_dbg = float(df_health_dbg.iloc[-1].get("Weight", 0)) if not df_health_dbg.empty else 0.0
-                progress_dbg = calculate_sprint_progress(sprint_dbg, current_w_dbg)
+            sprint_for_pit = get_active_sprint()
+            if sprint_for_pit and sprint_for_pit.get("start_date"):
+                pit_start = _align_date_to_saturday(sprint_for_pit["start_date"].date())
+        except:
+            pit_start = None
+    if pit_start is None:
+        pit_start = _align_date_to_saturday(get_current_kst().date())
 
-            ds_dbg = build_daily_state(
-                date_key=date_key_dbg,
-                now_kst=now_kst_dbg,
-                df_action=df_action_dbg,
-                cal_evts=cal_dbg,
-                available_slots=slots_dbg,
-                sprint_progress=progress_dbg,
-            )
-            st.write("daily_state preview:")
-            st.json(ds_dbg)
-        except Exception as e:
-            st.warning(f"debug daily_state error: {e}")
+    try:
+        df_action_pit = pd.DataFrame(fetch_sheet_data("Action_Log"))
+    except:
+        df_action_pit = pd.DataFrame()
 
-    if st.button("🔄 전체 캐시 클리어"):
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        st.success("캐시 클리어 완료!")
+    try:
+        df_health_pit = pd.DataFrame(fetch_sheet_data("Health_Log"))
+    except:
+        df_health_pit = pd.DataFrame()
+
+    try:
+        pit_rhr_start = _safe_float(st.secrets.get("PITWALL_RHR_START", PITWALL_RHR_START_DEFAULT), PITWALL_RHR_START_DEFAULT)
+    except:
+        pit_rhr_start = PITWALL_RHR_START_DEFAULT
+    try:
+        pit_rhr_target = _safe_float(st.secrets.get("PITWALL_RHR_TARGET", PITWALL_RHR_TARGET_DEFAULT), PITWALL_RHR_TARGET_DEFAULT)
+    except:
+        pit_rhr_target = PITWALL_RHR_TARGET_DEFAULT
+
+    pit_board = build_pitwall_cardio_experiment(
+        df_action=df_action_pit,
+        df_health=df_health_pit,
+        start_date=pit_start,
+        weeks=PITWALL_CARDIO_WEEKS,
+        rhr_start=pit_rhr_start,
+        rhr_target=pit_rhr_target,
+    )
+    render_pitwall_cardio_experiment(pit_board)
+
+    st.divider()
+
+    with st.expander("🛠️ 개발자 도구", expanded=False):
+        st.write("server now:", datetime.now())
+        st.write("kst now:", get_current_kst())
+        st.write("experiment start:", pit_start)
+        st.write("debug mode:", DEBUG_MODE)
+
+        if DEBUG_MODE:
+            try:
+                date_key_dbg = get_mission_date_key()
+                now_kst_dbg = get_current_kst()
+                df_action_dbg = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
+                cal_dbg = get_today_calendar_events(date_key_dbg)
+                slots_dbg = build_available_slots(date_key_dbg, cal_dbg)
+                sprint_dbg = get_active_sprint()
+                progress_dbg = None
+                if sprint_dbg:
+                    df_health_dbg = pd.DataFrame(get_db_connection("Health_Log").get_all_records())
+                    current_w_dbg = float(df_health_dbg.iloc[-1].get("Weight", 0)) if not df_health_dbg.empty else 0.0
+                    progress_dbg = calculate_sprint_progress(sprint_dbg, current_w_dbg)
+
+                ds_dbg = build_daily_state(
+                    date_key=date_key_dbg,
+                    now_kst=now_kst_dbg,
+                    df_action=df_action_dbg,
+                    cal_evts=cal_dbg,
+                    available_slots=slots_dbg,
+                    sprint_progress=progress_dbg,
+                )
+                st.write("daily_state preview:")
+                st.json(ds_dbg)
+            except Exception as e:
+                st.warning(f"debug daily_state error: {e}")
+
+        if st.button("🔄 전체 캐시 클리어"):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.success("캐시 클리어 완료!")
