@@ -153,20 +153,21 @@ hide_streamlit_style = """
     }
 
     [data-testid="stProgress"] > div {
-        background: #0d1627 !important;
-        border: 1px solid #1f2d46 !important;
+        background: transparent !important;
+        border: none !important;
         border-radius: 999px !important;
-        padding: 2px !important;
+        padding: 0 !important;
     }
     [data-testid="stProgress"] > div > div {
-        background: #12223c !important;
+        background: #22293a !important;
         border-radius: 999px !important;
+        height: 16px !important;
         overflow: hidden !important;
     }
     [data-testid="stProgress"] > div > div > div {
-        background: linear-gradient(90deg, #1d7bf2 0%, #45a4ff 100%) !important;
+        background: linear-gradient(90deg, #1d7bf2 0%, #3ea3ff 100%) !important;
         border-radius: 999px !important;
-        box-shadow: 0 0 10px rgba(59, 130, 246, 0.35);
+        box-shadow: none !important;
     }
 
     [data-testid="stAlert"] {
@@ -487,8 +488,8 @@ LATE_MODE_START_MIN = 30  # 20:30 이후에는 장시간 운동 제안 금지를
 DAY_WRAPUP_START_HOUR = 21
 DAY_WRAPUP_START_MIN = 0  # 21:00 이후 신규 운동 제안 차단, 하루 마무리 모드
 WRAPUP_SWITCH_HOUR = 23
-WRAPUP_CACHE_VERSION = "v3"
-ACTION_PLAN_CACHE_VERSION = "v6"
+WRAPUP_CACHE_VERSION = "v4"
+ACTION_PLAN_CACHE_VERSION = "v7"
 DAY_RESET_HOUR = 5
 DEFAULT_DAILY_KCAL_TARGET = 2000
 XC_BASELINE_KG = 0.30
@@ -620,6 +621,16 @@ def build_north_star_context():
 """.strip()
 
 
+def build_korean_style_context():
+    return """
+[KOREAN STYLE GUIDE]
+- 한국어 원어민 코치처럼 자연스럽고 간결하게 작성하십시오.
+- 영어 문장을 직역한 번역투 표현(예: 컨트롤, 패턴 반복 차단 등)을 남발하지 마십시오.
+- 어색한 군더더기 대신 짧고 명확한 문장을 우선하십시오.
+- 과장된 공문체(실시하십시오/수행하십시오 반복)를 줄이고, 상황에 맞는 자연스러운 존댓말을 사용하십시오.
+""".strip()
+
+
 
 # ==========================================
 # 백엔드 함수
@@ -695,6 +706,17 @@ def extract_df_marks_from_text(text, allow_plain_numbers=False):
     return sorted(marks)
 
 
+def _task_index_from_task_id(task_id):
+    s = str(task_id or "").strip().upper()
+    m = re.match(r"TASK[_-]?([1-9]\d*)$", s)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except:
+        return None
+
+
 def collect_dailyfive_completion_marks(today_logs):
     marks = {
         "df_numbers": set(),
@@ -757,8 +779,9 @@ def build_dailyfive_done_rows(tasks, marks):
     df_numbers = set((marks or {}).get("df_numbers", set()) or set())
     task_ids = set((marks or {}).get("task_ids", set()) or set())
 
-    for idx, t in enumerate((tasks or []), start=1):
+    for pos, t in enumerate((tasks or []), start=1):
         tid = str(t.get("task_id", "")).upper().strip()
+        idx = _task_index_from_task_id(tid) or pos
         title = str(t.get("title", "")).strip()
         title_up = title.upper()
         done = is_dailyfive_task_done(idx, tid, title_up, marks)
@@ -1340,7 +1363,13 @@ def load_dailyfive_from_sheet(date_key, sprint_id):
         if not rows:
             return None
 
-        rows = sorted(rows, key=lambda x: _safe_int(x.get("Priority", 999), 999))
+        rows = sorted(
+            rows,
+            key=lambda x: (
+                _task_index_from_task_id(x.get("Task_ID", "")) or 999,
+                _safe_int(x.get("Priority", 999), 999),
+            ),
+        )
         tasks = []
         for r in rows:
             tasks.append({
@@ -1479,7 +1508,7 @@ def sync_dailyfive_completion_to_sheet(date_key, sprint_id, done_rows):
                 continue
 
             row_tid = str(r.get("Task_ID", "")).upper().strip()
-            row_idx = _safe_int(r.get("Priority", 0), 0)
+            row_idx = _task_index_from_task_id(row_tid) or _safe_int(r.get("Priority", 0), 0)
             d = done_by_tid.get(row_tid) or done_by_idx.get(row_idx)
             if not d:
                 continue
@@ -3092,12 +3121,9 @@ def render_pitwall_cardio_experiment(board):
 .pwx-wrap { background:#070d18; color:#dbeafe; border:1px solid #1b2638; border-radius:18px; padding:14px; margin-top:8px; }
 .pwx-title { font-size:48px; font-weight:800; color:#f8fafc; margin:0; line-height:1.02; letter-spacing:-0.8px; }
 .pwx-sub { color:#8fa8c7; font-size:14px; margin-top:6px; margin-bottom:10px; }
-.pwx-sub-link { color:#61a5fa; font-weight:700; margin-left:3px; }
-.pwx-metrics { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); background:#0d1627; border:1px solid #1f2d46; border-radius:12px; margin-bottom:10px; overflow:hidden; }
-.pwx-metric { padding:9px 10px; border-right:1px solid #1b273d; }
-.pwx-metric:last-child { border-right:none; }
-.pwx-metric-k { color:#8ba0bd; font-size:11px; letter-spacing:1px; text-transform:uppercase; font-weight:700; margin-bottom:3px; }
-.pwx-metric-v { color:#f8fafc; font-size:34px; font-weight:800; line-height:1; letter-spacing:-0.8px; }
+.pwx-kpis { margin:-2px 0 10px; color:#e2e8f0; font-size:28px; font-weight:800; letter-spacing:-0.6px; line-height:1.1; }
+.pwx-kpis span { color:#f8fafc; }
+.pwx-kpis .sep { color:#5f789a; padding:0 10px; font-weight:600; }
 .pwx-legend { display:flex; gap:14px; color:#9fb0c6; font-size:13px; margin:4px 0 8px; }
 .pwx-dot { width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:6px; vertical-align:middle; }
 .pwx-dot-z2 { background:#4ade80; } .pwx-dot-hiit { background:#fb7185; } .pwx-dot-today { border:1px solid #60a5fa; background:transparent; }
@@ -3124,7 +3150,7 @@ def render_pitwall_cardio_experiment(board):
 .pwx-right-rhr-warn { color:#fca5a5; }
 @media (max-width: 980px) {
   .pwx-title { font-size:42px; }
-  .pwx-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .pwx-kpis { font-size:22px; }
   .pwx-week { grid-template-columns:1fr; }
   .pwx-right { text-align:left; }
 }
@@ -3137,17 +3163,19 @@ def render_pitwall_cardio_experiment(board):
     wk_rhr_text = f"" if wk_rhr is not None else ""
     html_parts.append(
         f'<div class="pwx-sub">{_html_escape(board.get("subtitle", ""))} · '
-        f'{_html_escape(hdr_date)}{_html_escape(wk_rhr_text)} · <span class="pwx-sub-link">Dashboard</span></div>'
+        f'{_html_escape(hdr_date)}{_html_escape(wk_rhr_text)}</div>'
     )
-    html_parts.append('<div class="pwx-metrics">')
-    top_cards = [
-        ("TOTAL Z2", f"{_safe_int(board.get('total_zone2', 0), 0)}m"),
-        ("TARGET", f"{_safe_int(board.get('target_zone2_min', 0), 0)}m"),
-        ("WEEK", f"{_safe_int(board.get('current_week', 1), 1)} of {_safe_int(board.get('weeks_total', 8), 8)}"),
-    ]
-    for k, v in top_cards:
-        html_parts.append(f'<div class="pwx-metric"><div class="pwx-metric-k">{k}</div><div class="pwx-metric-v">{v}</div></div>')
-    html_parts.append("</div>")
+    total_z2 = _safe_int(board.get("total_zone2", 0), 0)
+    target_z2 = _safe_int(board.get("target_zone2_min", 0), 0)
+    week_now = _safe_int(board.get("current_week", 1), 1)
+    week_total = _safe_int(board.get("weeks_total", 8), 8)
+    html_parts.append(
+        '<div class="pwx-kpis">'
+        f'<span>{total_z2}m</span><span class="sep">·</span>'
+        f'<span>{target_z2}m</span><span class="sep">·</span>'
+        f'<span>{week_now}/{week_total}</span>'
+        '</div>'
+    )
     html_parts.append(
         '<div class="pwx-legend">'
         '<span><i class="pwx-dot pwx-dot-z2"></i>Zone 2</span>'
@@ -3856,10 +3884,12 @@ def ai_generate_daily_five(date_key, sprint, current_status, context):
 
     persona_context = build_common_persona_context()
     north_star_context = build_north_star_context()
+    korean_style_context = build_korean_style_context()
 
     prompt = f"""
 {persona_context}
 {north_star_context}
+{korean_style_context}
 
 역할: Sprint Daily Five 에디터
 언어: 한국어
@@ -4094,10 +4124,12 @@ def ai_generate_daily_checkin(date_key, hrv, rhr, weight, morning_context, calen
     wc = "Workday(06-19 Work). No heavy gym during work." if dt.weekday() < 5 else "Weekend. Free."
     persona_context = build_common_persona_context()
     north_star_context = build_north_star_context()
+    korean_style_context = build_korean_style_context()
 
     prompt = f"""
 {persona_context}
 {north_star_context}
+{korean_style_context}
 
 역할: Daily Check-in 에디터
 언어: 한국어 존댓말
@@ -4327,10 +4359,12 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
     training_anchor_json = json.dumps(training_anchor, ensure_ascii=False)
     persona_context = build_common_persona_context()
     north_star_context = build_north_star_context()
+    korean_style_context = build_korean_style_context()
 
     prompt = f"""
 {persona_context}
 {north_star_context}
+{korean_style_context}
 
 역할: 실시간 코칭 에디터
 언어: 한국어 존댓말
@@ -4342,6 +4376,8 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 - 응원, 독려, 경고 톤은 상황에 맞게 자율적으로 사용하십시오.
 - 이 섹션의 최우선 목적은 분석 전시가 아니라 행동 변화 유도입니다.
 - persona_context의 캐릭터/말투/호칭 규칙을 일관되게 준수하십시오.
+- 번역투 대신 자연스러운 한국어 구어체 존댓말로 작성하십시오.
+- 불필요한 외래어(컨트롤, 패턴 등) 남용을 피하고 쉬운 한국어를 우선하십시오.
 
 [최소 가드레일]
 - daily_state 사실과 모순되지 마십시오.
@@ -4476,10 +4512,26 @@ PITWALL_PATCH_TRIGGER_KEYWORDS = [
 ]
 
 
+def _extract_df_task_targets(user_message):
+    txt_up = str(user_message or "").upper()
+    targets = set()
+    for m in re.finditer(r"(?<![A-Z0-9])DF\s*([1-5])(?!\d)", txt_up):
+        targets.add(f"task_{int(m.group(1))}")
+    for m in re.finditer(r"(?<![A-Z0-9])TASK[_-]?([1-5])(?!\d)", txt_up):
+        targets.add(f"task_{int(m.group(1))}")
+    return sorted(targets)
+
+
 def _pitwall_wants_patch(user_message):
     txt = str(user_message or "").strip().lower()
     if not txt:
         return False
+    if _extract_df_task_targets(txt):
+        return True
+    change_verbs = ["바꾸", "변경", "수정", "교체", "replace", "change", "update", "revise"]
+    if any(v in txt for v in change_verbs):
+        if ("df" in txt) or ("task" in txt):
+            return True
     return any(k in txt for k in PITWALL_PATCH_TRIGGER_KEYWORDS)
 
 
@@ -4617,7 +4669,13 @@ def build_pitwall_consult_context(date_key, context_nonce="0"):
             if str(r.get("Date", "")).strip() == str(date_key)
             and str(r.get("Sprint_ID", "")).strip() == sprint_id
         ]
-        tasks = sorted(tasks, key=lambda x: _safe_int(x.get("Priority", 99), 99))
+        tasks = sorted(
+            tasks,
+            key=lambda x: (
+                _task_index_from_task_id(x.get("Task_ID", "")) or 999,
+                _safe_int(x.get("Priority", 99), 99),
+            ),
+        )
         out["daily_five_tasks"] = [
             {
                 "task_id": str(t.get("Task_ID", "")).strip(),
@@ -4662,9 +4720,12 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
 
     persona_context = build_common_persona_context()
     north_star_context = build_north_star_context()
+    korean_style_context = build_korean_style_context()
     compact_context = _pitwall_compact_context(consult_context)
     context_json = json.dumps(compact_context, ensure_ascii=False, indent=2)
     wants_patch = _pitwall_wants_patch(txt)
+    patch_targets = _extract_df_task_targets(txt)
+    patch_targets_json = json.dumps(patch_targets, ensure_ascii=False)
     chat_model = str(st.secrets.get("PITWALL_CHAT_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip() or "gpt-4o-mini"
     patch_model = str(st.secrets.get("PITWALL_PATCH_MODEL", "gpt-4o") or "gpt-4o").strip() or "gpt-4o"
 
@@ -4675,6 +4736,7 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
             prompt = f"""
 {persona_context}
 {north_star_context}
+{korean_style_context}
 
 역할: Pit Wall 상담 코치
 언어: 한국어 존댓말
@@ -4706,6 +4768,7 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
         prompt = f"""
 {persona_context}
 {north_star_context}
+{korean_style_context}
 
 역할: Pit Wall 상담 코치
 언어: 한국어 존댓말
@@ -4715,6 +4778,7 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
 - 필요하면 오늘 Daily Five(task_1~task_5) 수정 제안을 JSON patch 형태로 제공합니다.
 - patch는 기존 Task_ID를 업데이트하는 변경만 허용합니다. (신규 생성/삭제 금지)
 - 캘린더/슬롯/로그 사실과 모순되지 않게 작성하십시오.
+- 사용자가 특정 DF 번호(예: DF3)를 언급하면 해당 task_id(task_3)를 changes에 반드시 포함하십시오.
 
 [대화 이력]
 {history_text}
@@ -4724,6 +4788,9 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
 
 [상태 컨텍스트 JSON]
 {context_json}
+
+[PATCH_TARGET_HINT]
+{patch_targets_json}
 
 [출력 형식 - JSON ONLY]
 반드시 json object 1개만 출력하십시오.
@@ -5551,6 +5618,7 @@ def apply_wrapup_forecast_guard(result, kind, payload):
 def ai_generate_wrapup(kind, payload):
     persona_context = build_common_persona_context()
     north_star_context = build_north_star_context()
+    korean_style_context = build_korean_style_context()
     payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
     client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -5577,6 +5645,7 @@ def ai_generate_wrapup(kind, payload):
     prompt = f"""
 {persona_context}
 {north_star_context}
+{korean_style_context}
 
 역할: {role_txt}
 언어: 한국어 존댓말
@@ -5666,6 +5735,7 @@ def render_wrapup_block(kind, wrapup, xc=None):
             )
         critique = str(wrapup.get("critique", "") or "").strip()
         if critique:
+            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
             st.markdown(f"**비판/진단:** {critique}")
         next_action = str(wrapup.get("next_action", "") or "").strip()
         if next_action:
@@ -6822,14 +6892,27 @@ with tab3:
             with c1:
                 log_date = st.date_input("날짜", value=default_date, key="log_date_widget", label_visibility="collapsed")
             with c2:
-                log_hour = st.selectbox("시", options=list(range(0, 24)), index=default_hour, key="log_hour_widget", label_visibility="collapsed")
+                hour_options = [f"{h:02d}" for h in range(0, 24)]
+                log_hour_label = st.select_slider(
+                    "시",
+                    options=hour_options,
+                    value=f"{default_hour:02d}",
+                    key="log_hour_slider_widget",
+                    label_visibility="collapsed",
+                )
             with c3:
-                minute_options = list(range(0, 60, 5))
-                log_minute = st.selectbox("분", options=minute_options, index=minute_options.index(default_minute) if default_minute in minute_options else 0, key="log_minute_widget", label_visibility="collapsed")
+                minute_options = [f"{m:02d}" for m in range(0, 60, 5)]
+                log_minute_label = st.select_slider(
+                    "분",
+                    options=minute_options,
+                    value=f"{default_minute:02d}" if f"{default_minute:02d}" in minute_options else "00",
+                    key="log_minute_slider_widget",
+                    label_visibility="collapsed",
+                )
             with c4:
                 log_category = st.selectbox("카테고리", options=categories, index=0, key="log_category_widget", label_visibility="collapsed")
 
-            log_time = f"{int(log_hour):02d}:{int(log_minute):02d}"
+            log_time = f"{int(log_hour_label):02d}:{int(log_minute_label):02d}"
 
             log_text = st.text_area(
                 "내용",
