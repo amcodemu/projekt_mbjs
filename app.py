@@ -489,7 +489,7 @@ DAY_WRAPUP_START_HOUR = 21
 DAY_WRAPUP_START_MIN = 0  # 21:00 이후 신규 운동 제안 차단, 하루 마무리 모드
 WRAPUP_SWITCH_HOUR = 23
 WRAPUP_CACHE_VERSION = "v4"
-ACTION_PLAN_CACHE_VERSION = "v7"
+ACTION_PLAN_CACHE_VERSION = "v8"
 DAY_RESET_HOUR = 5
 DEFAULT_DAILY_KCAL_TARGET = 2000
 XC_BASELINE_KG = 0.30
@@ -667,6 +667,25 @@ def humanize_action_text(text: str) -> str:
     # 혹시 남는 snake_case 토큰이 있으면 보기 좋게
     out = re.sub(r"\b([a-z]+_[a-z0-9_]+)\b", lambda m: m.group(1).replace("_", " "), out)
     out = out.replace("  ", " ").strip()
+    return out
+
+
+def polish_korean_coaching_text(text: str) -> str:
+    if not text:
+        return text
+    out = str(text)
+    replace_map = {
+        "낙후 상태": "뒤처진 상태",
+        "체중 변화를 유도": "체중 감량 흐름을 다시 만들",
+        "측정치": "지표",
+        "컨트롤": "관리",
+        "패턴 반복을 차단": "같은 패턴을 끊",
+        "실시하십시오": "해 주세요",
+        "수행하십시오": "해 주세요",
+    }
+    for k, v in replace_map.items():
+        out = out.replace(k, v)
+    out = re.sub(r"\s{2,}", " ", out).strip()
     return out
 
 
@@ -3806,9 +3825,9 @@ def validate_action_plan_output(result, daily_state):
         safe_lines.append(line)
     text = "\n".join(safe_lines).strip()
 
-    result["current_analysis"] = humanize_action_text(analysis)
-    result["next_actions"] = humanize_action_text(text)
-    result["warnings"] = warns.strip()
+    result["current_analysis"] = polish_korean_coaching_text(humanize_action_text(analysis))
+    result["next_actions"] = polish_korean_coaching_text(humanize_action_text(text))
+    result["warnings"] = polish_korean_coaching_text(warns.strip())
     return result
 
 
@@ -6452,26 +6471,27 @@ with tab1:
                 except:
                     pass
 
-                headline = (ck_res or {}).get("headline") or "오늘 컨디션 체크"
-                headline_reason = (ck_res or {}).get("headline_reason") or ""
+                headline = polish_korean_coaching_text((ck_res or {}).get("headline") or "오늘 컨디션 체크")
+                checkin_analysis = polish_korean_coaching_text((ck_res or {}).get("analysis", "-"))
+                mission_workout = polish_korean_coaching_text(ck_res.get("mission_workout", "-"))
+                mission_diet = polish_korean_coaching_text(ck_res.get("mission_diet", "-"))
+                mission_recovery = polish_korean_coaching_text(ck_res.get("mission_recovery", "-"))
                 with st.container(border=True):
                     st.markdown(
                         f"""<h3 style="margin:0 0 8px 0;">☀️ Daily Check-in <span class="time-badge">{checkin_time} 생성</span></h3>""",
                         unsafe_allow_html=True,
                     )
                     st.subheader(f"{headline}")
-                    if headline_reason:
-                        st.caption(f"근거: {headline_reason}")
-                    st.markdown(f"**분석:** {(ck_res or {}).get('analysis', '-')}")
+                    st.markdown(f"**분석:** {checkin_analysis}")
                     st.write("")
                     st.markdown("**오늘의 전략**")
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        st.markdown(f"""<div class="strategy-box workout-box"><span class="strategy-title">운동</span>{ck_res.get('mission_workout', "-")}</div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class="strategy-box workout-box"><span class="strategy-title">운동</span>{mission_workout}</div>""", unsafe_allow_html=True)
                     with c2:
-                        st.markdown(f"""<div class="strategy-box diet-box"><span class="strategy-title">식단</span>{ck_res.get('mission_diet', "-")}</div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class="strategy-box diet-box"><span class="strategy-title">식단</span>{mission_diet}</div>""", unsafe_allow_html=True)
                     with c3:
-                        st.markdown(f"""<div class="strategy-box recovery-box"><span class="strategy-title">회복</span>{ck_res.get('mission_recovery', "-")}</div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class="strategy-box recovery-box"><span class="strategy-title">회복</span>{mission_recovery}</div>""", unsafe_allow_html=True)
             else:
                 st.info(f"💤 데이터 대기 중 ({date_key})")
 
@@ -6527,8 +6547,8 @@ with tab1:
                     st.markdown(f"""<h3 style="margin-bottom: 10px;">Action Plan <span class="time-badge">{ap.get('generated_at', now_kst.strftime('%H:%M'))} 기준</span></h3>""", unsafe_allow_html=True)
                     if xc and (xc.get("xc_value_kg") is not None):
                         st.caption(f"xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.1f}kg")
-                    st.markdown(f"**Status:** {ap.get('current_analysis', '')}")
-                    st.markdown(f"**Do this:**\n{ap.get('next_actions', '').replace(chr(10), chr(10)*2)}")
+                    st.markdown(f"**지금 상황:** {ap.get('current_analysis', '')}")
+                    st.markdown(f"**지금 할 일:**\n{ap.get('next_actions', '').replace(chr(10), chr(10)*2)}")
                     if ap.get('warnings'):
                         st.error(f"⚠️ {ap['warnings']}")
         else:
@@ -6616,10 +6636,19 @@ with tab2:
                         with st.container(border=True):
                             day = progress['day']
                             total = progress['sprint']['duration_days']
-                            progress_pct = min(100.0, max(0.0, float(progress.get('progress_pct', 0.0))))
+                            day_progress_pct = 0.0
+                            if int(total) > 0:
+                                day_progress_pct = min(100.0, max(0.0, (float(day) / float(total)) * 100.0))
 
                             st.caption(f"Day {day}/{total}")
-                            st.progress(progress_pct / 100)
+                            st.markdown(
+                                f"""
+<div style="width:100%; height:16px; background:#22293a; border-radius:999px; overflow:hidden; margin:2px 0 4px 0;">
+  <div style="height:100%; width:{day_progress_pct:.2f}%; background:linear-gradient(90deg, #1d7bf2 0%, #3ea3ff 100%); border-radius:999px;"></div>
+</div>
+""",
+                                unsafe_allow_html=True,
+                            )
 
                             st.write("")
 
