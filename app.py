@@ -65,11 +65,19 @@ hide_streamlit_style = """
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px; background-color: transparent; border-bottom: none; padding-bottom: 5px;
     }
-    .stTabs [data-baseweb="tab"] {
+    .stTabs [data-baseweb="tab"],
+    .stTabs [role="tab"] {
         height: 45px; background-color: var(--mb-bg-2); border-radius: 25px;
         box-shadow: none; border: 1px solid var(--mb-line);
         color: var(--mb-text-dim); font-weight: 700; font-size: 14px;
-        flex-grow: 1; transition: all 0.2s;
+        flex-grow: 1; min-width: 0;
+        display: flex !important; align-items: center !important; justify-content: center !important;
+        width: 100% !important; padding: 0 14px !important;
+        cursor: pointer !important; transition: all 0.2s;
+    }
+    .stTabs [data-baseweb="tab"] > *,
+    .stTabs [role="tab"] > * {
+        pointer-events: none;
     }
     .stTabs [aria-selected="true"] {
         background-color: #142341 !important; color: #ffffff !important;
