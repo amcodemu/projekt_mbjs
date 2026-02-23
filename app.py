@@ -23,10 +23,25 @@ hide_streamlit_style = """
     [data-testid="stSidebar"] {display: none;}
     section[data-testid="stSidebar"] {display: none;}
     header {background-color: transparent !important;}
+    :root {
+        --mb-bg-0: #070d18;
+        --mb-bg-1: #0a1324;
+        --mb-bg-2: #0d1627;
+        --mb-line: #1f2d46;
+        --mb-line-soft: #1a2638;
+        --mb-text: #e2e8f0;
+        --mb-text-dim: #8fa8c7;
+        --mb-accent: #60a5fa;
+        --mb-accent-2: #22c55e;
+        --mb-warn: #fb7185;
+    }
     .stApp {
-        background-color: #F8FAFC;
-        color: #1E293B;
+        background: linear-gradient(180deg, var(--mb-bg-0) 0%, var(--mb-bg-1) 100%);
+        color: var(--mb-text);
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    [data-testid="stAppViewContainer"] {
+        background: linear-gradient(180deg, var(--mb-bg-0) 0%, var(--mb-bg-1) 100%);
     }
     .block-container {
         padding-top: 0.5rem;
@@ -35,6 +50,15 @@ hide_streamlit_style = """
         padding-right: 1rem;
         max-width: 1000px;
     }
+    h1, h2, h3, h4, h5, h6, p, label {
+        color: var(--mb-text) !important;
+    }
+    .stCaption {
+        color: var(--mb-text-dim) !important;
+    }
+    [data-testid="stMarkdownContainer"] p {
+        color: var(--mb-text);
+    }
 
     hr { margin-top: 1rem; margin-bottom: 1rem; }
 
@@ -42,16 +66,117 @@ hide_streamlit_style = """
         gap: 8px; background-color: transparent; border-bottom: none; padding-bottom: 5px;
     }
     .stTabs [data-baseweb="tab"] {
-        height: 45px; background-color: #FFFFFF; border-radius: 25px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid #E2E8F0;
-        color: #64748B; font-weight: 700; font-size: 14px;
+        height: 45px; background-color: var(--mb-bg-2); border-radius: 25px;
+        box-shadow: none; border: 1px solid var(--mb-line);
+        color: var(--mb-text-dim); font-weight: 700; font-size: 14px;
         flex-grow: 1; transition: all 0.2s;
     }
     .stTabs [aria-selected="true"] {
-        background-color: #1A2B4D !important; color: #FFFFFF !important;
-        border: none !important; box-shadow: 0 4px 6px -1px rgba(26,43,77,0.3) !important;
+        background-color: #142341 !important; color: #ffffff !important;
+        border: 1px solid #3f7ed4 !important;
+        box-shadow: 0 0 0 1px rgba(96,165,250,0.30) inset !important;
     }
     .stTabs [data-baseweb="tab-highlight"] { display: none; }
+
+    div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="stElementContainer"]) > div[data-testid="stExpander"] {
+        background: var(--mb-bg-2);
+        border: 1px solid var(--mb-line);
+        border-radius: 12px;
+    }
+
+    div[data-testid="stForm"], div[data-testid="stExpander"], div[data-testid="stDataFrame"] {
+        border-color: var(--mb-line) !important;
+    }
+    div[data-baseweb="input"] > div,
+    div[data-baseweb="select"] > div,
+    textarea {
+        background: #0b1424 !important;
+        color: var(--mb-text) !important;
+        border-color: var(--mb-line) !important;
+    }
+    input, textarea {
+        color: var(--mb-text) !important;
+    }
+    div[data-baseweb="input"] input,
+    div[data-baseweb="base-input"] input,
+    textarea {
+        color: #e2e8f0 !important;
+        -webkit-text-fill-color: #e2e8f0 !important;
+        caret-color: #93c5fd !important;
+    }
+    div[data-baseweb="input"] input::placeholder,
+    div[data-baseweb="base-input"] input::placeholder,
+    textarea::placeholder {
+        color: #93a6c0 !important;
+        opacity: 1 !important;
+    }
+    [data-testid="stForm"] p,
+    [data-testid="stForm"] small,
+    [data-testid="stForm"] span {
+        color: #8fa8c7 !important;
+    }
+
+    button[kind],
+    .stButton > button,
+    .stDownloadButton > button,
+    .stFormSubmitButton > button {
+        background: #12203a !important;
+        color: #dbeafe !important;
+        border: 1px solid #2c466e !important;
+    }
+    button[kind]:hover,
+    .stButton > button:hover,
+    .stDownloadButton > button:hover,
+    .stFormSubmitButton > button:hover {
+        border-color: #60a5fa !important;
+        color: #ffffff !important;
+    }
+    .stFormSubmitButton > button[kind="primary"] {
+        background: linear-gradient(180deg, #2f7df6 0%, #1d5fd0 100%) !important;
+        color: #ffffff !important;
+        border: 1px solid #5ea5ff !important;
+        box-shadow: 0 0 0 1px rgba(96,165,250,0.25) inset, 0 4px 14px rgba(37,99,235,0.35) !important;
+    }
+    .stFormSubmitButton > button[kind="primary"]:hover {
+        background: linear-gradient(180deg, #4f97ff 0%, #2a6ee0 100%) !important;
+        border-color: #93c5fd !important;
+    }
+
+    [data-testid="stMetric"] {
+        background: var(--mb-bg-2);
+        border: 1px solid var(--mb-line);
+        border-radius: 12px;
+        padding: 10px 12px;
+    }
+    [data-testid="stMetricLabel"], [data-testid="stMetricDelta"] {
+        color: var(--mb-text-dim) !important;
+    }
+
+    [data-testid="stProgress"] > div {
+        background: #0d1627 !important;
+        border: 1px solid #1f2d46 !important;
+        border-radius: 999px !important;
+        padding: 2px !important;
+    }
+    [data-testid="stProgress"] > div > div {
+        background: #12223c !important;
+        border-radius: 999px !important;
+        overflow: hidden !important;
+    }
+    [data-testid="stProgress"] > div > div > div {
+        background: linear-gradient(90deg, #1d7bf2 0%, #45a4ff 100%) !important;
+        border-radius: 999px !important;
+        box-shadow: 0 0 10px rgba(59, 130, 246, 0.35);
+    }
+
+    [data-testid="stAlert"] {
+        border-radius: 12px;
+    }
+    [data-testid="stAlert"] > div {
+        background: #0f172a !important;
+        color: var(--mb-text) !important;
+        border: 1px solid var(--mb-line) !important;
+    }
 
     @media (max-width: 640px) {
         div[data-testid="column"] {
@@ -62,22 +187,73 @@ hide_streamlit_style = """
     }
 
     .strategy-box {
-        background-color: #FFFFFF; padding: 15px; border-radius: 12px;
-        color: #1E293B; font-size: 15px; line-height: 1.5;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 10px;
+        background-color: var(--mb-bg-2); padding: 15px; border-radius: 12px;
+        color: var(--mb-text); font-size: 15px; line-height: 1.5;
+        box-shadow: none; margin-bottom: 10px;
     }
     .strategy-title {
-        font-weight: 800; font-size: 16px; margin-bottom: 8px; display: block;
+        font-weight: 800; font-size: 16px; margin-bottom: 8px; display: block; color: #f8fafc;
     }
-    .workout-box { border: 2px solid #3B82F6; }
-    .diet-box { border: 2px solid #10B981; }
-    .recovery-box { border: 2px solid #F59E0B; }
+    .workout-box { border: 2px solid #3b82f6; }
+    .diet-box { border: 2px solid #22c55e; }
+    .recovery-box { border: 2px solid #f59e0b; }
 
     .time-badge {
-        background-color: #1A2B4D; color: white; padding: 2px 10px;
+        background-color: #1a2f52; color: white; padding: 2px 10px;
         border-radius: 12px; font-size: 12px; font-weight: 600;
         vertical-align: middle; margin-left: 8px; display: inline-block;
         transform: translateY(-2px);
+    }
+
+    .pit-chat-panel {
+        background: #0b1424;
+        border: 1px solid #21314b;
+        border-radius: 14px;
+        padding: 10px;
+        max-height: 420px;
+        overflow-y: auto;
+    }
+    .pit-msg-row {
+        display: flex;
+        margin-bottom: 10px;
+    }
+    .pit-msg-row-user {
+        justify-content: flex-end;
+    }
+    .pit-msg-row-coach {
+        justify-content: flex-start;
+    }
+    .pit-bubble {
+        max-width: 82%;
+        border-radius: 12px;
+        border: 1px solid #2b3c58;
+        padding: 10px 12px;
+        line-height: 1.5;
+        font-size: 14px;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    .pit-bubble-user {
+        background: #172742;
+        color: #e2e8f0;
+        border-color: #355585;
+    }
+    .pit-bubble-coach {
+        background: #0f1b30;
+        color: #dbeafe;
+        border-color: #29436d;
+    }
+    .pit-bubble-tag {
+        font-size: 11px;
+        color: #93a6c0;
+        margin-bottom: 4px;
+        letter-spacing: 0.2px;
+        font-weight: 700;
+    }
+    .pit-empty {
+        color: #8fa8c7;
+        font-size: 13px;
+        padding: 8px 4px;
     }
 
     div[data-testid="stMetricValue"] {
@@ -216,6 +392,51 @@ def load_wrapup_cache(kind, cache_key):
         return None
 
 
+def save_pit_chat_cache(date_key, history, pending_patch=None):
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        cache_file = os.path.join(CACHE_DIR, f"pit_chat_{date_key}.json")
+        payload = {
+            "date_key": str(date_key),
+            "history": list(history or [])[-200:],
+            "pending_patch": pending_patch if isinstance(pending_patch, dict) else None,
+            "updated_at": get_current_kst().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return True
+    except:
+        return False
+
+
+def load_pit_chat_cache(date_key):
+    try:
+        cache_file = os.path.join(CACHE_DIR, f"pit_chat_{date_key}.json")
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            history = data.get("history", []) if isinstance(data, dict) else []
+            pending_patch = data.get("pending_patch") if isinstance(data, dict) else None
+            if not isinstance(history, list):
+                history = []
+            if not isinstance(pending_patch, dict):
+                pending_patch = None
+            return {"history": history, "pending_patch": pending_patch}
+        return {"history": [], "pending_patch": None}
+    except:
+        return {"history": [], "pending_patch": None}
+
+
+def clear_pit_chat_cache(date_key):
+    try:
+        cache_file = os.path.join(CACHE_DIR, f"pit_chat_{date_key}.json")
+        if os.path.exists(cache_file):
+            os.remove(cache_file)
+        return True
+    except:
+        return False
+
+
 def invalidate_realtime_plan_cache(date_key):
     try:
         ai_generate_action_plan_cached.clear()
@@ -238,7 +459,7 @@ def clear_old_caches(keep_days=7):
         now = get_current_kst()
         for filename in os.listdir(CACHE_DIR):
             # ✅ [FIX] startswith 사용 오류 수정
-            if filename.startswith(("checkin_", "dailyfive_", "xc_", "daily_wrapup_", "weekly_wrapup_")):
+            if filename.startswith(("checkin_", "dailyfive_", "xc_", "daily_wrapup_", "weekly_wrapup_", "pit_chat_")):
                 filepath = os.path.join(CACHE_DIR, filename)
                 file_dt = datetime.fromtimestamp(os.path.getmtime(filepath), tz=KST)
                 if (now - file_dt).days > keep_days:
@@ -267,7 +488,7 @@ DAY_WRAPUP_START_HOUR = 21
 DAY_WRAPUP_START_MIN = 0  # 21:00 이후 신규 운동 제안 차단, 하루 마무리 모드
 WRAPUP_SWITCH_HOUR = 23
 WRAPUP_CACHE_VERSION = "v3"
-ACTION_PLAN_CACHE_VERSION = "v5"
+ACTION_PLAN_CACHE_VERSION = "v6"
 DAY_RESET_HOUR = 5
 DEFAULT_DAILY_KCAL_TARGET = 2000
 XC_BASELINE_KG = 0.30
@@ -839,6 +1060,14 @@ DAILY_SPRINT_PROGRESS_DEFAULT_HEADERS = [
     "Summary_JSON", "Updated_At",
 ]
 
+DF5_CATEGORY_UI = {
+    "workout": {"icon": "🏋️", "border": "#3B82F6"},
+    "diet": {"icon": "🥗", "border": "#22C55E"},
+    "recovery": {"icon": "🛌", "border": "#F59E0B"},
+    "hydration": {"icon": "💧", "border": "#06B6D4"},
+    "default": {"icon": "📌", "border": "#64748B"},
+}
+
 
 def _safe_int(v, default=0):
     try:
@@ -919,23 +1148,73 @@ def _get_prev_progress_row(rows, sprint_id, date_key):
 
 def get_prev_xc_feedback(sprint_id, date_key):
     """
-    전일(정확히는 date_key 이전 최근일)의 XC_Gap_KG를 반환.
-    양수면 전일 xC 미달.
+    date_key 기준 '어제 성과'를 반환.
+    우선순위:
+    1) date_key 당일 행의 Prev_XC_KG / Actual_Change_KG (어제 xC 성과가 기록되는 정석 위치)
+    2) 당일 행이 없으면 직전 행 + 오늘 Start_Weight_KG로 보정 계산
+    양수 gap_kg는 xC 미달.
     """
     try:
         rows = fetch_sheet_data("Daily_Sprint_Progress")
+        sprint_id_str = str(sprint_id).strip()
+        date_key_str = str(date_key).strip()
+
+        current_row = None
+        for r in (rows or []):
+            if (
+                str(r.get("Sprint_ID", "")).strip() == sprint_id_str
+                and str(r.get("Date", "")).strip() == date_key_str
+            ):
+                current_row = r
+                break
+
+        if current_row:
+            prev_xc = _safe_float(current_row.get("Prev_XC_KG"), None)
+            actual = _safe_float(current_row.get("Actual_Change_KG"), None)
+            gap = _safe_float(current_row.get("XC_Gap_KG"), None)
+            ach_pct = _safe_float(current_row.get("XC_Achievement_PCT"), None)
+            if gap is None and (prev_xc is not None) and (actual is not None):
+                gap = float(prev_xc) - float(actual)
+            if (ach_pct is None) and (prev_xc is not None) and (actual is not None) and float(prev_xc) != 0:
+                ach_pct = (float(actual) / float(prev_xc)) * 100.0
+
+            # date_key 행은 '어제 성과'를 담으므로 표시일은 date_key-1
+            try:
+                fb_date = (datetime.strptime(date_key_str, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+            except:
+                fb_date = None
+
+            if (prev_xc is not None) or (actual is not None) or (gap is not None):
+                return {
+                    "date": fb_date,
+                    "gap_kg": (round(float(gap), 3) if gap is not None else None),
+                    "prev_xc_kg": (round(float(prev_xc), 3) if prev_xc is not None else None),
+                    "actual_change_kg": (round(float(actual), 3) if actual is not None else None),
+                    "achievement_pct": (round(float(ach_pct), 1) if ach_pct is not None else None),
+                }
+
+        # fallback: 직전 row 기반 보정 (당일 row 미생성 시)
         prev = _get_prev_progress_row(rows, sprint_id, date_key)
         if not prev:
             return {"date": None, "gap_kg": None}
-        gap = _safe_float(prev.get("XC_Gap_KG"), None)
-        prev_xc = _safe_float(prev.get("Prev_XC_KG"), None)
-        actual = _safe_float(prev.get("Actual_Change_KG"), None)
-        ach_pct = _safe_float(prev.get("XC_Achievement_PCT"), None)
-        if gap is None:
-            if (prev_xc is not None) and (actual is not None):
-                gap = float(prev_xc) - float(actual)
+
+        prev_date = str(prev.get("Date", "")).strip() or None
+        prev_xc = _safe_float(prev.get("XC_Value_KG"), None)
+        prev_start = _safe_float(prev.get("Start_Weight_KG"), None)
+        today_start = _safe_float(get_start_weight_kg_for_date(date_key_str), None)
+
+        actual = None
+        if (prev_start is not None) and (today_start is not None):
+            actual = float(prev_start) - float(today_start)
+        gap = None
+        if (prev_xc is not None) and (actual is not None):
+            gap = float(prev_xc) - float(actual)
+        ach_pct = None
+        if (prev_xc is not None) and (actual is not None) and float(prev_xc) != 0:
+            ach_pct = (float(actual) / float(prev_xc)) * 100.0
+
         return {
-            "date": str(prev.get("Date", "")).strip() or None,
+            "date": prev_date,
             "gap_kg": (round(float(gap), 3) if gap is not None else None),
             "prev_xc_kg": (round(float(prev_xc), 3) if prev_xc is not None else None),
             "actual_change_kg": (round(float(actual), 3) if actual is not None else None),
@@ -972,6 +1251,73 @@ def _a1_col(idx):
         n, rem = divmod(n - 1, 26)
         out = chr(65 + rem) + out
     return out
+
+
+def _update_row_fields_by_header(sheet, headers, row_num, value_map, value_input_option="RAW"):
+    """
+    특정 row의 일부 컬럼만 헤더 기준으로 갱신한다.
+    기존 수식 컬럼을 보존하기 위해 전체 row 덮어쓰기를 피한다.
+    """
+    updates = []
+    for h, v in (value_map or {}).items():
+        if h not in headers:
+            continue
+        col = _a1_col(headers.index(h) + 1)
+        updates.append({"range": f"{col}{row_num}", "values": [[v]]})
+    if updates:
+        sheet.batch_update(updates, value_input_option=value_input_option)
+
+
+def _apply_daily_progress_derived_formulas(sheet, headers, row_num):
+    """
+    Daily_Sprint_Progress 파생 컬럼을 시트 수식으로 계산한다.
+    앱은 기본값만 쓰고, 파생 계산은 시트가 담당한다.
+    """
+    required = [
+        "Date", "Sprint_ID", "XC_Value_KG", "Start_Weight_KG",
+        "Prev_Start_Weight_KG", "Prev_XC_KG",
+        "Actual_Change_KG", "XC_Gap_KG", "XC_Achievement_PCT",
+    ]
+    if any(h not in headers for h in required):
+        return
+
+    date_col = _a1_col(headers.index("Date") + 1)
+    sprint_col = _a1_col(headers.index("Sprint_ID") + 1)
+    xc_col = _a1_col(headers.index("XC_Value_KG") + 1)
+    start_col = _a1_col(headers.index("Start_Weight_KG") + 1)
+    prev_start_col = _a1_col(headers.index("Prev_Start_Weight_KG") + 1)
+    prev_xc_col = _a1_col(headers.index("Prev_XC_KG") + 1)
+    actual_col = _a1_col(headers.index("Actual_Change_KG") + 1)
+    gap_col = _a1_col(headers.index("XC_Gap_KG") + 1)
+    ach_col = _a1_col(headers.index("XC_Achievement_PCT") + 1)
+    r = int(row_num)
+
+    formulas = {
+        "Prev_Start_Weight_KG": (
+            f'=IFERROR(INDEX(SORT(FILTER({{{date_col}$2:{date_col},{start_col}$2:{start_col}}},'
+            f'{sprint_col}$2:{sprint_col}={sprint_col}{r},{date_col}$2:{date_col}<{date_col}{r}),1,FALSE),1,2),"")'
+        ),
+        "Prev_XC_KG": (
+            f'=IFERROR(INDEX(SORT(FILTER({{{date_col}$2:{date_col},{xc_col}$2:{xc_col}}},'
+            f'{sprint_col}$2:{sprint_col}={sprint_col}{r},{date_col}$2:{date_col}<{date_col}{r}),1,FALSE),1,2),"")'
+        ),
+        "Actual_Change_KG": (
+            f'=IF(AND({prev_start_col}{r}<>"",{start_col}{r}<>""),{prev_start_col}{r}-{start_col}{r},"")'
+        ),
+        "XC_Gap_KG": (
+            f'=IF(AND({prev_xc_col}{r}<>"",{actual_col}{r}<>""),{prev_xc_col}{r}-{actual_col}{r},"")'
+        ),
+        "XC_Achievement_PCT": (
+            f'=IF(AND({prev_xc_col}{r}<>"",{actual_col}{r}<>"",{prev_xc_col}{r}<>0),({actual_col}{r}/{prev_xc_col}{r})*100,"")'
+        ),
+    }
+    _update_row_fields_by_header(
+        sheet=sheet,
+        headers=headers,
+        row_num=r,
+        value_map=formulas,
+        value_input_option="USER_ENTERED",
+    )
 
 
 def _append_rows_by_headers(sheet, headers, row_dicts):
@@ -1199,33 +1545,27 @@ def sync_daily_sprint_progress_completion(date_key, sprint_id, completed, total,
                 target_row_num = idx
                 break
 
-        if target_row_num:
-            row = rows[target_row_num - 2]
-            row_map = {h: row.get(h, "") for h in headers}
-            row_map["Date"] = str(date_key)
-            row_map["Sprint_ID"] = sprint_id_str
-            row_map["Completed"] = int(completed)
-            row_map["Total"] = int(total)
-            row_map["Completion_Rate"] = round(float(completion_rate), 4)
-            row_map["Updated_At"] = now_str
+        if not target_row_num:
+            # 부분 데이터 행(Completed/Total만 채워진 행) 생성 방지.
+            # full row는 persist_daily_sprint_progress에서 생성한다.
+            return False
 
-            end_col = _a1_col(len(headers))
-            values = [row_map.get(h, "") for h in headers]
-            sheet.update(
-                f"A{target_row_num}:{end_col}{target_row_num}",
-                [values],
-                value_input_option="RAW",
-            )
-        else:
-            row_map = {h: "" for h in headers}
-            row_map["Date"] = str(date_key)
-            row_map["Sprint_ID"] = sprint_id_str
-            row_map["Completed"] = int(completed)
-            row_map["Total"] = int(total)
-            row_map["Completion_Rate"] = round(float(completion_rate), 4)
-            row_map["Updated_At"] = now_str
-            values = [row_map.get(h, "") for h in headers]
-            sheet.append_row(values, value_input_option="RAW")
+        row = rows[target_row_num - 2]
+        row_map = {h: row.get(h, "") for h in headers}
+        row_map["Date"] = str(date_key)
+        row_map["Sprint_ID"] = sprint_id_str
+        row_map["Completed"] = int(completed)
+        row_map["Total"] = int(total)
+        row_map["Completion_Rate"] = round(float(completion_rate), 4)
+        row_map["Updated_At"] = now_str
+
+        end_col = _a1_col(len(headers))
+        values = [row_map.get(h, "") for h in headers]
+        sheet.update(
+            f"A{target_row_num}:{end_col}{target_row_num}",
+            [values],
+            value_input_option="RAW",
+        )
 
         try:
             fetch_sheet_data.clear()
@@ -1884,6 +2224,169 @@ def run_sheet_schema_sync_once():
     except:
         return False
 
+
+def backfill_daily_sprint_progress_missing_rows():
+    """
+    Daily_Sprint_Progress의 부분/누락 행을 가능한 범위에서 보정한다.
+    - Health_Log로 Start_Weight_KG/Weight_Current 보강
+    - 이전 행 기반 Prev_* / Actual_Change / XC_Gap / XC_Achievement 계산
+    - xC 캐시가 있으면 XC_Value_KG 보강
+    """
+    try:
+        sheet = get_db_connection("Daily_Sprint_Progress")
+        headers = _get_or_init_headers(sheet, DAILY_SPRINT_PROGRESS_DEFAULT_HEADERS)
+        rows = sheet.get_all_records()
+        if not rows:
+            return 0
+
+        now_str = get_current_kst().strftime("%Y-%m-%d %H:%M:%S")
+        weight_cache = {}
+        xc_cache = {}
+
+        def _start_weight(date_key):
+            dk = str(date_key or "").strip()
+            if not dk:
+                return None
+            if dk not in weight_cache:
+                weight_cache[dk] = get_start_weight_kg_for_date(dk)
+            return weight_cache.get(dk)
+
+        def _xc_cached(date_key, sprint_id):
+            key = f"{date_key}|{sprint_id}"
+            if key not in xc_cache:
+                xc_cache[key] = load_xc_cache(str(date_key), str(sprint_id)) or {}
+            return xc_cache.get(key, {}) or {}
+
+        by_sprint = {}
+        for row_num, row in enumerate(rows, start=2):
+            date_key = str(row.get("Date", "")).strip()
+            sprint_id = str(row.get("Sprint_ID", "")).strip()
+            if not date_key or not sprint_id:
+                continue
+            by_sprint.setdefault(sprint_id, []).append((row_num, row, date_key))
+
+        updated = 0
+        for sprint_id, items in by_sprint.items():
+            items.sort(key=lambda x: x[2])
+            prev_start_weight = None
+            prev_xc = None
+
+            for row_num, row, date_key in items:
+                row_map = {h: row.get(h, "") for h in headers}
+                changed = False
+
+                start_weight = _safe_float(row_map.get("Start_Weight_KG"), None)
+                if start_weight is None:
+                    start_weight = _start_weight(date_key)
+                    if start_weight is not None:
+                        row_map["Start_Weight_KG"] = round(float(start_weight), 3)
+                        changed = True
+
+                weight_current = _safe_float(row_map.get("Weight_Current"), None)
+                if weight_current is None and start_weight is not None:
+                    weight_current = float(start_weight)
+                    row_map["Weight_Current"] = round(weight_current, 3)
+                    changed = True
+
+                xc_value = _safe_float(row_map.get("XC_Value_KG"), None)
+                xc_obj = _xc_cached(date_key, sprint_id)
+                if xc_value is None:
+                    xc_cached_val = _safe_float(xc_obj.get("xc_value_kg"), None)
+                    if xc_cached_val is not None:
+                        xc_value = float(xc_cached_val)
+                        row_map["XC_Value_KG"] = round(xc_value, 3)
+                        changed = True
+
+                prev_start_col = _safe_float(row_map.get("Prev_Start_Weight_KG"), None)
+                if prev_start_col is None and prev_start_weight is not None:
+                    prev_start_col = float(prev_start_weight)
+                    row_map["Prev_Start_Weight_KG"] = round(prev_start_col, 3)
+                    changed = True
+
+                prev_xc_col = _safe_float(row_map.get("Prev_XC_KG"), None)
+                if prev_xc_col is None and prev_xc is not None:
+                    prev_xc_col = float(prev_xc)
+                    row_map["Prev_XC_KG"] = round(prev_xc_col, 3)
+                    changed = True
+
+                actual_change = _safe_float(row_map.get("Actual_Change_KG"), None)
+                if actual_change is None and (prev_start_col is not None) and (start_weight is not None):
+                    actual_change = float(prev_start_col) - float(start_weight)
+                    row_map["Actual_Change_KG"] = round(actual_change, 3)
+                    changed = True
+
+                xc_gap = _safe_float(row_map.get("XC_Gap_KG"), None)
+                if xc_gap is None and (prev_xc_col is not None) and (actual_change is not None):
+                    xc_gap = float(prev_xc_col) - float(actual_change)
+                    row_map["XC_Gap_KG"] = round(xc_gap, 3)
+                    changed = True
+
+                ach_pct = _safe_float(row_map.get("XC_Achievement_PCT"), None)
+                if ach_pct is None and (prev_xc_col is not None) and (actual_change is not None) and float(prev_xc_col) != 0:
+                    ach_pct = (float(actual_change) / float(prev_xc_col)) * 100.0
+                    row_map["XC_Achievement_PCT"] = round(ach_pct, 1)
+                    changed = True
+
+                summary_raw = str(row_map.get("Summary_JSON", "") or "").strip()
+                if not summary_raw:
+                    row_map["Summary_JSON"] = json.dumps(
+                        {
+                            "backfill": True,
+                            "xc_reason": list(xc_obj.get("xc_reason", []) or []),
+                            "calc": {
+                                "start_weight": start_weight,
+                                "prev_start_weight": prev_start_col,
+                                "prev_xc": prev_xc_col,
+                                "actual_change": actual_change,
+                                "xc_gap": xc_gap,
+                                "xc_achievement_pct": ach_pct,
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                    changed = True
+
+                if changed:
+                    row_map["Updated_At"] = now_str
+                    end_col = _a1_col(len(headers))
+                    values = [row_map.get(h, "") for h in headers]
+                    sheet.update(
+                        f"A{row_num}:{end_col}{row_num}",
+                        [values],
+                        value_input_option="RAW",
+                    )
+                    updated += 1
+
+                if start_weight is not None:
+                    prev_start_weight = float(start_weight)
+                if xc_value is not None:
+                    prev_xc = float(xc_value)
+
+        if updated > 0:
+            try:
+                fetch_sheet_data.clear()
+            except:
+                pass
+        return int(updated)
+    except Exception as e:
+        print("backfill daily sprint progress error:", e)
+        return 0
+
+
+def run_daily_progress_backfill_once():
+    """
+    같은 날짜에는 한 번만 Daily_Sprint_Progress 누락 보정을 수행한다.
+    """
+    try:
+        today_key = get_current_kst().strftime("%Y-%m-%d")
+        if st.session_state.get("_daily_progress_backfill_checked_date") == today_key:
+            return 0
+        st.session_state["_daily_progress_backfill_checked_date"] = today_key
+        return backfill_daily_sprint_progress_missing_rows()
+    except:
+        return 0
+
+
 def calculate_sprint_progress(sprint, current_weight):
     if not sprint:
         return None
@@ -2141,14 +2644,18 @@ def build_available_slots(date_key, cal_evts):
     lunch_too_late = is_past_date or ((now_kst.date() == dt.date()) and (now_kst.time() >= lunch_plan_cutoff))
     evening_blocked = has_termin_overlap(evening_start, evening_end) or dinner_tagged
     day_wrapup_mode = is_past_date or ((now_kst.date() == dt.date()) and (now_kst.time() >= day_wrapup_cutoff))
+    lunch_active_now = (now_kst.date() == dt.date()) and (lunch_start <= now_kst <= lunch_end)
+    evening_active_now = (now_kst.date() == dt.date()) and (evening_start <= now_kst <= evening_end)
 
     slots = []
+    lunch_enabled = (not lunch_blocked) and (not lunch_too_late)
     slots.append({
         "slot_id": "lunch_window",
         "label": "점심 가능 시간",
         "start": lunch_start.strftime("%H:%M"),
         "end": lunch_end.strftime("%H:%M"),
-        "enabled": (not lunch_blocked) and (not lunch_too_late),
+        "enabled": lunch_enabled,
+        "active_now": bool(lunch_enabled and lunch_active_now),
         "notes": "캘린더와 현재 시각 기준으로 점심 실행 가능 여부만 제공합니다.",
         "reason_disabled":
             ("점심 태그/점심시간 일정(Termin)으로 막힘" if lunch_blocked else
@@ -2156,12 +2663,14 @@ def build_available_slots(date_key, cal_evts):
              "11시 이후라 점심시간 계획은 폐기" if lunch_too_late else
              "")
     })
+    evening_enabled = (not evening_blocked) and (not day_wrapup_mode)
     slots.append({
         "slot_id": "evening_window",
         "label": "저녁 가능 시간",
         "start": "19:00",
         "end": "23:59",
-        "enabled": (not evening_blocked) and (not day_wrapup_mode),
+        "enabled": evening_enabled,
+        "active_now": bool(evening_enabled and evening_active_now),
         "notes": "캘린더와 현재 시각 기준으로 저녁 실행 가능 여부만 제공합니다.",
         "reason_disabled":
             ("저녁 태그 또는 19:00~23:59 일정(Termin)과 겹쳐서 저녁 실행 불가" if evening_blocked else
@@ -2584,7 +3093,7 @@ def render_pitwall_cardio_experiment(board):
 .pwx-title { font-size:48px; font-weight:800; color:#f8fafc; margin:0; line-height:1.02; letter-spacing:-0.8px; }
 .pwx-sub { color:#8fa8c7; font-size:14px; margin-top:6px; margin-bottom:10px; }
 .pwx-sub-link { color:#61a5fa; font-weight:700; margin-left:3px; }
-.pwx-metrics { display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); background:#0d1627; border:1px solid #1f2d46; border-radius:12px; margin-bottom:10px; overflow:hidden; }
+.pwx-metrics { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); background:#0d1627; border:1px solid #1f2d46; border-radius:12px; margin-bottom:10px; overflow:hidden; }
 .pwx-metric { padding:9px 10px; border-right:1px solid #1b273d; }
 .pwx-metric:last-child { border-right:none; }
 .pwx-metric-k { color:#8ba0bd; font-size:11px; letter-spacing:1px; text-transform:uppercase; font-weight:700; margin-bottom:3px; }
@@ -2634,8 +3143,6 @@ def render_pitwall_cardio_experiment(board):
     top_cards = [
         ("TOTAL Z2", f"{_safe_int(board.get('total_zone2', 0), 0)}m"),
         ("TARGET", f"{_safe_int(board.get('target_zone2_min', 0), 0)}m"),
-        ("Z2 WEEKS", f"{_safe_int(board.get('z2_weeks_done', 0), 0)}/{_safe_int(board.get('weeks_total', 8), 8)}"),
-        ("HIIT WEEKS", f"{_safe_int(board.get('hiit_weeks_done', 0), 0)}/{_safe_int(board.get('weeks_total', 8), 8)}"),
         ("WEEK", f"{_safe_int(board.get('current_week', 1), 1)} of {_safe_int(board.get('weeks_total', 8), 8)}"),
     ]
     for k, v in top_cards:
@@ -3219,13 +3726,20 @@ def _is_action_oriented_text(text):
 
 def build_forced_next_action_from_state(daily_state):
     slots = daily_state.get("available_slots", []) or []
-    enabled = [s for s in slots if s.get("enabled")]
-    if enabled:
-        s = enabled[0]
+    enabled_now = [s for s in slots if s.get("enabled") and s.get("active_now")]
+    enabled_later = [s for s in slots if s.get("enabled") and (not s.get("active_now"))]
+    if enabled_now:
+        s = enabled_now[0]
         label = str(s.get("label") or s.get("slot_id") or "다음 슬롯")
         start = str(s.get("start") or "")
         end = str(s.get("end") or "")
         return f"지금 확정 행동: {label}({start}-{end}) 기준으로 운동 1회를 캘린더/할 일 목록에 즉시 고정하고 실행하십시오."
+    if enabled_later:
+        s = enabled_later[0]
+        label = str(s.get("label") or s.get("slot_id") or "다음 슬롯")
+        start = str(s.get("start") or "")
+        end = str(s.get("end") or "")
+        return f"지금 확정 행동: {label}({start}-{end}) 시작 전까지 식사/수분/장비 준비를 완료하고, 시작 시각에 즉시 실행하십시오."
     return "지금 확정 행동: 오늘은 추가 섭취를 종료하고 수분 보충 후 수면 복구를 즉시 실행하십시오."
 
 
@@ -3242,6 +3756,19 @@ def validate_action_plan_output(result, daily_state):
     analysis = analysis.replace("초저녁", "저녁")
 
     text = _sanitize_plan_lines(text)
+
+    slots = list((daily_state or {}).get("available_slots", []) or [])
+    active_now_count = sum(1 for s in slots if s.get("enabled") and s.get("active_now"))
+    if active_now_count == 0:
+        low = text.lower()
+        has_immediate_word = any(tok in low for tok in ["지금 당장", "바로", "즉시", "now", "right now"])
+        has_exercise_word = any(tok in low for tok in ["운동", "러닝", "조깅", "달리기", "헬스", "걷기", "workout", "run", "jog"])
+        if has_immediate_word and has_exercise_word:
+            text = (
+                "현재 시각에는 즉시 실행 가능한 운동 슬롯이 없습니다. "
+                "열려 있는 다음 슬롯 시작 전까지 식사/수분/준비를 정리하고, 슬롯 시작 시점에 바로 실행하십시오."
+            )
+
     banned = ["내일", "tomorrow", "다음 주", "다음주", "next day"]
     safe_lines = []
     for line in str(text).splitlines():
@@ -3819,6 +4346,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 [최소 가드레일]
 - daily_state 사실과 모순되지 마십시오.
 - 캘린더 원문이 아니라 available_slots만 사실로 사용하십시오.
+- available_slots에서 active_now=true 슬롯이 없으면 '지금 당장 운동 시작' 제안을 하지 마십시오.
 - late_mode=true 또는 enabled 슬롯이 없으면 오늘 남은 시간의 마무리 행동만 제시하십시오.
 - dinner_done=true일 때 '저녁 차단' 대신 '추가 섭취 차단/야식 차단' 표현을 사용하십시오.
 - Action Plan에서는 내일/다음날 계획을 제시하지 말고, 오늘 남은 시간 행동만 제시하십시오.
@@ -3932,6 +4460,432 @@ def ai_generate_action_plan(hrv, rhr, weight, full_context, today_activities, av
             list(today_activities),
             available_slots
         )
+
+
+PITWALL_PATCH_FIELD_MAP = {
+    "title": "Title",
+    "description": "Description",
+    "why": "Why",
+    "priority": "Priority",
+    "category": "Category",
+    "urgency_level": "Urgency_Level",
+}
+
+PITWALL_PATCH_TRIGGER_KEYWORDS = [
+    "patch", "패치", "수정안", "계획 수정", "task_", "json", "daily five 수정",
+]
+
+
+def _pitwall_wants_patch(user_message):
+    txt = str(user_message or "").strip().lower()
+    if not txt:
+        return False
+    return any(k in txt for k in PITWALL_PATCH_TRIGGER_KEYWORDS)
+
+
+def _pitwall_compact_context(consult_context):
+    ctx = dict(consult_context or {})
+    try:
+        recent_logs = list(ctx.get("recent_logs", []) or [])
+        if recent_logs:
+            ctx["recent_logs"] = recent_logs[:10]
+    except:
+        pass
+    try:
+        daily_state = dict(ctx.get("daily_state", {}) or {})
+        today_logs = list(daily_state.get("today_logs", []) or [])
+        if today_logs:
+            daily_state["today_logs"] = today_logs[:8]
+        slots = list(daily_state.get("available_slots", []) or [])
+        if slots:
+            daily_state["available_slots"] = slots[:4]
+        ctx["daily_state"] = daily_state
+    except:
+        pass
+    try:
+        tasks = list(ctx.get("daily_five_tasks", []) or [])
+        if tasks:
+            ctx["daily_five_tasks"] = tasks[:5]
+    except:
+        pass
+    return ctx
+
+
+def invalidate_dailyfive_local_cache(date_key, sprint_id):
+    try:
+        cache_file = os.path.join(CACHE_DIR, f"dailyfive_{date_key}_{sprint_id}.json")
+        if os.path.exists(cache_file):
+            os.remove(cache_file)
+    except Exception as e:
+        print("dailyfive local cache invalidate error:", e)
+
+
+@st.cache_data(ttl=120)
+def build_pitwall_consult_context(date_key, context_nonce="0"):
+    out = {
+        "date_key": str(date_key),
+        "now_kst": get_current_kst().strftime("%Y-%m-%d %H:%M:%S"),
+        "sprint": {},
+        "daily_state": {},
+        "daily_five_focus": {},
+        "daily_five_tasks": [],
+        "recent_logs": [],
+    }
+    try:
+        df_action = pd.DataFrame(fetch_sheet_data("Action_Log"))
+    except Exception:
+        df_action = pd.DataFrame()
+    try:
+        df_health = pd.DataFrame(fetch_sheet_data("Health_Log"))
+    except Exception:
+        df_health = pd.DataFrame()
+
+    sprint = get_active_sprint()
+    if not sprint:
+        out["recent_logs"] = list(build_recent_action_evidence(df_action, str(date_key), lookback_days=2).get("recent_logs_newest_first", []))
+        return out
+
+    sprint_id = str(sprint.get("sprint_id", "") or "")
+    out["sprint"] = {
+        "sprint_id": sprint_id,
+        "name": str(sprint.get("name", "") or ""),
+        "start_date": str(sprint.get("start_date", "") or ""),
+        "end_date": str(sprint.get("end_date", "") or ""),
+        "duration_days": int(sprint.get("duration_days", 14) or 14),
+    }
+
+    weight = 0.0
+    hrv = 0.0
+    rhr = 0.0
+    if not df_health.empty:
+        last_h = df_health.iloc[-1]
+        weight = _safe_float(last_h.get("Weight", 0.0), 0.0)
+        hrv = _safe_float(last_h.get("HRV", 0.0), 0.0)
+        rhr = _safe_float(last_h.get("RHR", 0.0), 0.0)
+
+    progress = None
+    try:
+        if weight > 0:
+            progress = calculate_sprint_progress(sprint, weight)
+    except Exception:
+        progress = None
+
+    cal_evts = get_today_calendar_events(str(date_key))
+    slots = build_available_slots(str(date_key), cal_evts)
+    daily_state = build_daily_state(
+        date_key=str(date_key),
+        now_kst=get_current_kst(),
+        df_action=df_action,
+        cal_evts=cal_evts,
+        available_slots=slots,
+        sprint_progress=progress,
+        current_hrv=hrv,
+        current_rhr=rhr,
+    )
+    daily_state_brief = {
+        "phase": daily_state.get("phase"),
+        "late_mode": daily_state.get("late_mode"),
+        "calendar_flags": daily_state.get("calendar_flags", {}),
+        "meal_done": daily_state.get("meal_done", {}),
+        "workout_done": daily_state.get("workout_done", {}),
+        "intake_today": daily_state.get("intake_today", {}),
+        "xc": daily_state.get("xc", {}),
+        "urgency": daily_state.get("urgency", {}),
+        "available_slots": daily_state.get("available_slots", []),
+        "today_logs": list((daily_state.get("today_logs", []) or [])),
+    }
+    out["daily_state"] = daily_state_brief
+
+    try:
+        out["daily_five_focus"] = build_daily_five_focus_snapshot(str(date_key), sprint_id, df_action)
+    except Exception:
+        out["daily_five_focus"] = {
+            "has_plan": False,
+            "completed": 0,
+            "total": 0,
+            "completion_rate": 0.0,
+            "remaining_count": 0,
+            "remaining_tasks": [],
+            "summary_line": "DF 계획 없음",
+            "signature": "no_plan",
+        }
+
+    try:
+        rows = fetch_sheet_data("Sprint_Daily_Tasks")
+        tasks = [
+            r for r in (rows or [])
+            if str(r.get("Date", "")).strip() == str(date_key)
+            and str(r.get("Sprint_ID", "")).strip() == sprint_id
+        ]
+        tasks = sorted(tasks, key=lambda x: _safe_int(x.get("Priority", 99), 99))
+        out["daily_five_tasks"] = [
+            {
+                "task_id": str(t.get("Task_ID", "")).strip(),
+                "priority": _safe_int(t.get("Priority", 0), 0),
+                "category": str(t.get("Category", "")).strip(),
+                "title": str(t.get("Title", "")).strip(),
+                "description": str(t.get("Description", "")).strip(),
+                "why": str(t.get("Why", "")).strip(),
+                "completed": _to_boolish(t.get("Completed", "")),
+            }
+            for t in tasks
+        ]
+    except Exception:
+        out["daily_five_tasks"] = []
+
+    try:
+        recent = build_recent_action_evidence(df_action, str(date_key), lookback_days=2)
+        out["recent_logs"] = list(recent.get("recent_logs_newest_first", []))
+    except Exception:
+        out["recent_logs"] = []
+
+    return out
+
+
+def ai_generate_pitwall_consultation(user_message, consult_context, chat_history=None):
+    txt = str(user_message or "").strip()
+    if not txt:
+        return {"coach_reply": "", "plan_patch": {"enabled": False, "changes": []}}
+
+    if not OPENAI_API_KEY:
+        return {
+            "coach_reply": "OpenAI API 키가 없어 상담을 생성하지 못했습니다.",
+            "plan_patch": {"enabled": False, "changes": []},
+        }
+
+    history_lines = []
+    for h in (chat_history or [])[-4:]:
+        role = str(h.get("role", "user"))
+        tag = "COACH" if role == "assistant" else "USER"
+        history_lines.append(f"[{tag}] {str(h.get('text', '')).strip()}")
+    history_text = "\n".join(history_lines) if history_lines else "(no history)"
+
+    persona_context = build_common_persona_context()
+    north_star_context = build_north_star_context()
+    compact_context = _pitwall_compact_context(consult_context)
+    context_json = json.dumps(compact_context, ensure_ascii=False, indent=2)
+    wants_patch = _pitwall_wants_patch(txt)
+    chat_model = str(st.secrets.get("PITWALL_CHAT_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip() or "gpt-4o-mini"
+    patch_model = str(st.secrets.get("PITWALL_PATCH_MODEL", "gpt-4o") or "gpt-4o").strip() or "gpt-4o"
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        if not wants_patch:
+            prompt = f"""
+{persona_context}
+{north_star_context}
+
+역할: Pit Wall 상담 코치
+언어: 한국어 존댓말
+
+[목표]
+- 사용자의 질문에 대해 실질적인 행동 변화를 유도하는 코칭을 제공합니다.
+- 과도한 서론 없이 핵심만 짧고 강하게 답합니다.
+- 마지막 줄은 반드시 '지금 할 1개:'로 시작해 즉시 행동 1개만 제시하십시오.
+
+[대화 이력]
+{history_text}
+
+[사용자 최신 질문]
+{txt}
+
+[상태 컨텍스트 JSON]
+{context_json}
+"""
+            response = client.chat.completions.create(
+                model=chat_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=420,
+            )
+            coach_reply = str(response.choices[0].message.content or "").strip()
+            if not coach_reply:
+                coach_reply = "지금 할 1개: 오늘 남은 DF 항목 중 최우선 1개를 20분 안에 바로 실행해 주세요."
+            return {"coach_reply": coach_reply, "plan_patch": {"enabled": False, "changes": []}}
+
+        prompt = f"""
+{persona_context}
+{north_star_context}
+
+역할: Pit Wall 상담 코치
+언어: 한국어 존댓말
+
+[목표]
+- 사용자의 질문에 대해 실질적인 행동 변화를 유도하는 코칭을 제공합니다.
+- 필요하면 오늘 Daily Five(task_1~task_5) 수정 제안을 JSON patch 형태로 제공합니다.
+- patch는 기존 Task_ID를 업데이트하는 변경만 허용합니다. (신규 생성/삭제 금지)
+- 캘린더/슬롯/로그 사실과 모순되지 않게 작성하십시오.
+
+[대화 이력]
+{history_text}
+
+[사용자 최신 질문]
+{txt}
+
+[상태 컨텍스트 JSON]
+{context_json}
+
+[출력 형식 - JSON ONLY]
+반드시 json object 1개만 출력하십시오.
+{{
+  "coach_reply": "사용자에게 보여줄 답변",
+  "plan_patch": {{
+    "enabled": true/false,
+    "date_key": "YYYY-MM-DD",
+    "reason": "왜 수정이 필요한지 1-2문장",
+    "changes": [
+      {{
+        "task_id": "task_1",
+        "title": "...",
+        "description": "...",
+        "why": "...",
+        "priority": 1,
+        "category": "workout/diet/recovery/hydration",
+        "urgency_level": "high/medium/low"
+      }}
+    ]
+  }}
+}}
+"""
+        response = client.chat.completions.create(
+            model=patch_model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            max_tokens=900,
+        )
+        result = json.loads(response.choices[0].message.content)
+    except Exception as e:
+        return {
+            "coach_reply": f"상담 생성 중 오류가 발생했습니다: {e}",
+            "plan_patch": {"enabled": False, "changes": []},
+        }
+
+    coach_reply = str(result.get("coach_reply", "") or "").strip()
+    if not coach_reply:
+        coach_reply = "현재 데이터 기준으로 계획 조정이 필요합니다. 아래 수정안을 검토해 주세요."
+
+    raw_patch = result.get("plan_patch", {}) or {}
+    patch_date = str(raw_patch.get("date_key", "") or str((consult_context or {}).get("date_key", get_mission_date_key())))
+    raw_changes = raw_patch.get("changes", []) or []
+    safe_changes = []
+    for c in raw_changes[:8]:
+        if not isinstance(c, dict):
+            continue
+        task_id = str(c.get("task_id", "") or "").strip()
+        if not task_id:
+            continue
+        one = {"task_id": task_id}
+        for k in PITWALL_PATCH_FIELD_MAP.keys():
+            if k not in c:
+                continue
+            if k == "priority":
+                p = _safe_int(c.get("priority", 0), 0)
+                if p > 0:
+                    one["priority"] = max(1, min(5, p))
+            else:
+                v = str(c.get(k, "") or "").strip()
+                if v:
+                    one[k] = v
+        if len(one) > 1:
+            safe_changes.append(one)
+
+    patch = {
+        "enabled": bool(raw_patch.get("enabled", False)) and bool(safe_changes),
+        "date_key": patch_date,
+        "reason": str(raw_patch.get("reason", "") or "").strip(),
+        "changes": safe_changes,
+    }
+    return {"coach_reply": coach_reply, "plan_patch": patch}
+
+
+def apply_pitwall_plan_patch(sprint_id, plan_patch):
+    sprint_id_str = str(sprint_id or "").strip()
+    if not sprint_id_str:
+        return {"ok": False, "updated": 0, "message": "활성 스프린트가 없어 수정안을 반영할 수 없습니다."}
+
+    patch = dict(plan_patch or {})
+    changes = list(patch.get("changes", []) or [])
+    date_key = str(patch.get("date_key", "") or get_mission_date_key()).strip()
+    if not changes:
+        return {"ok": False, "updated": 0, "message": "반영할 변경 항목이 없습니다."}
+
+    try:
+        sheet = get_db_connection("Sprint_Daily_Tasks")
+        headers = _get_or_init_headers(sheet, SPRINT_DAILY_TASKS_DEFAULT_HEADERS)
+        rows = sheet.get_all_records()
+    except Exception as e:
+        return {"ok": False, "updated": 0, "message": f"시트 접근 오류: {e}"}
+
+    updated = 0
+    missing = []
+    for ch in changes:
+        task_id = str(ch.get("task_id", "") or "").strip()
+        if not task_id:
+            continue
+        target_row = None
+        for row_num, r in enumerate(rows, start=2):
+            if str(r.get("Date", "")).strip() != date_key:
+                continue
+            if str(r.get("Sprint_ID", "")).strip() != sprint_id_str:
+                continue
+            if str(r.get("Task_ID", "")).strip().lower() == task_id.lower():
+                target_row = row_num
+                break
+
+        if not target_row:
+            missing.append(task_id)
+            continue
+
+        value_map = {}
+        for src_key, col_name in PITWALL_PATCH_FIELD_MAP.items():
+            if src_key not in ch:
+                continue
+            raw_val = ch.get(src_key)
+            if src_key == "priority":
+                v = _safe_int(raw_val, 0)
+                if v <= 0:
+                    continue
+                value_map[col_name] = max(1, min(5, v))
+            else:
+                v = str(raw_val or "").strip()
+                if not v:
+                    continue
+                value_map[col_name] = v
+
+        if not value_map:
+            continue
+
+        try:
+            _update_row_fields_by_header(
+                sheet=sheet,
+                headers=headers,
+                row_num=target_row,
+                value_map=value_map,
+                value_input_option="RAW",
+            )
+            updated += 1
+        except Exception as e:
+            print("pitwall patch update error:", e)
+
+    if updated > 0:
+        try:
+            fetch_sheet_data.clear()
+        except Exception:
+            pass
+        invalidate_dailyfive_local_cache(date_key, sprint_id_str)
+        invalidate_realtime_plan_cache(date_key)
+        return {
+            "ok": True,
+            "updated": updated,
+            "message": f"{updated}개 task 변경을 반영했습니다."
+        }
+
+    miss_txt = ", ".join(missing[:5]) if missing else "적용 가능한 변경 없음"
+    return {
+        "ok": False,
+        "updated": 0,
+        "message": f"반영된 변경이 없습니다. (미매칭 task_id: {miss_txt})"
+    }
 
 
 def _safe_json_obj(raw):
@@ -4686,17 +5640,17 @@ def get_or_create_wrapup(kind, cache_key, payload):
 
 
 def render_wrapup_block(kind, wrapup, xc=None):
-    title = "🌙 Daily Wrap-up" if kind == "daily" else "📅 Weekly Wrap-up"
+    title = "Daily Wrap-up" if kind == "daily" else "Weekly Wrap-up"
     label = "내일 첫 행동" if kind == "daily" else "다음 주 첫 행동"
     st.markdown(
         f"""<h3 style="margin-bottom: 10px;">{title} <span class="time-badge">{wrapup.get('generated_at', get_current_kst().strftime('%H:%M'))} 기준</span></h3>""",
         unsafe_allow_html=True,
     )
     if xc and (xc.get("xc_value_kg") is not None):
-        st.caption(f"🎯 xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.1f}kg")
+        st.caption(f"xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.1f}kg")
 
     with st.container(border=True):
-        st.markdown(f"**📊 종합 평가:** {wrapup.get('overview', '-')}")
+        st.markdown(f"**종합 평가:** {wrapup.get('overview', '-')}")
         praise = str(wrapup.get("praise", "") or "").strip()
         if praise:
             st.success(f"✅ 칭찬: {praise}")
@@ -4712,10 +5666,10 @@ def render_wrapup_block(kind, wrapup, xc=None):
             )
         critique = str(wrapup.get("critique", "") or "").strip()
         if critique:
-            st.markdown(f"**🧨 비판/진단:** {critique}")
+            st.markdown(f"**비판/진단:** {critique}")
         next_action = str(wrapup.get("next_action", "") or "").strip()
         if next_action:
-            st.markdown(f"**🧭 {label}:** {next_action}")
+            st.markdown(f"**{label}:** {next_action}")
 
 def ai_parse_log(category, user_text, log_time, ref_data=""):
     client = OpenAI(api_key=OPENAI_API_KEY)
@@ -5173,6 +6127,20 @@ def handle_log_form_submit():
             ""
         ])
 
+        # DF 저장 직후에는 Sprint_Daily_Tasks Completed 동기화를 즉시 수행
+        try:
+            if str(category or "").upper() == "DF":
+                sprint_now = get_active_sprint()
+                if sprint_now and sprint_now.get("sprint_id"):
+                    df_action_latest = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
+                    _ = get_daily_five_completion(
+                        date_key=date_key,
+                        sprint_id=sprint_now["sprint_id"],
+                        df_action=df_action_latest,
+                    )
+        except Exception as e:
+            print("df completion immediate sync error:", e)
+
         try:
             # DF 체크 저장은 Action Plan 즉시 재생성 필요도가 낮아 캐시 무효화를 생략한다.
             if str(category or "").upper() != "DF":
@@ -5198,10 +6166,13 @@ if DEBUG_MODE and _rollover_updates > 0:
 _schema_synced = run_sheet_schema_sync_once()
 if DEBUG_MODE and _schema_synced:
     print("sprint sheet schema synced")
+_progress_backfilled = run_daily_progress_backfill_once()
+if DEBUG_MODE and _progress_backfilled > 0:
+    print(f"daily sprint progress backfilled rows: {_progress_backfilled}")
 
 _dashboard_subpage = get_dashboard_subpage()
 if _dashboard_subpage == "makjang":
-    st.markdown("### 📉 일상 막장 지수 상세")
+    st.markdown("### 일상 막장 지수 상세")
     c_back, c_empty = st.columns([0.18, 0.82])
     with c_back:
         if st.button("← 대시보드", width="stretch"):
@@ -5220,11 +6191,10 @@ if _dashboard_subpage == "makjang":
         st.error(f"막장지수 상세 로딩 실패: {e}")
     st.stop()
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 대시보드", "🎯 Sprint", "📝 기록하기", "🏎️ Pit Wall"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["DASHBOARD", "SPRINT", "LOG", "PIT WALL", "PLAYERS BOX"])
 
 # [TAB 1] Dashboard
 with tab1:
-    st.markdown("### 📡 Real-time Bio-Stat")
     try:
         sh_h = get_db_connection("Health_Log")
         sh_a = get_db_connection("Action_Log")
@@ -5255,6 +6225,7 @@ with tab1:
             xc = None
             sprint = None
             progress = None
+            daily_state = {}
             try:
                 sprint = get_active_sprint()
                 if sprint:
@@ -5274,34 +6245,78 @@ with tab1:
                 print("xC error:", e)
                 xc = None
 
+            daily_five_focus = {
+                "has_plan": False,
+                "completed": 0,
+                "total": 0,
+                "completion_rate": 0.0,
+                "remaining_count": 0,
+                "remaining_tasks": [],
+                "summary_line": "DF 계획 없음",
+                "signature": "no_plan",
+            }
+            if sprint and progress and daily_state:
+                try:
+                    daily_five_focus = build_daily_five_focus_snapshot(date_key, sprint["sprint_id"], df_a)
+                    daily_five_status_for_sheet = {
+                        "has_plan": bool(daily_five_focus.get("has_plan", False)),
+                        "completed": int(daily_five_focus.get("completed", 0)),
+                        "total": int(daily_five_focus.get("total", 0)),
+                        "completion_rate": float(daily_five_focus.get("completion_rate", 0.0)),
+                    }
+                    persist_daily_sprint_progress(
+                        date_key=date_key,
+                        sprint_id=sprint["sprint_id"],
+                        daily_state=daily_state,
+                        daily_five_status=daily_five_status_for_sheet,
+                        sprint_progress=progress,
+                    )
+                except Exception as e:
+                    print("persist daily sprint progress (tab1) error:", e)
+
             
             mission = calculate_mission_status(w_c)
             
             mj = compute_makjang_3day_score(date_key, df_a)
             mj_score = mj["score"]
+            last_updated_raw = str(last_h.get('Date', '') or '').strip()
+            last_updated_badge = now_kst.strftime('%H:%M')
+            try:
+                ts = pd.to_datetime(last_updated_raw, errors='coerce')
+                if pd.notna(ts):
+                    last_updated_badge = ts.strftime('%H:%M')
+                else:
+                    m = re.search(r"(\d{1,2}:\d{2})", last_updated_raw)
+                    if m:
+                        last_updated_badge = m.group(1)
+            except Exception:
+                pass
 
-            st.caption(f"🕒 마지막 업데이트: {last_h.get('Date','Unknown')}")
+            st.markdown(
+                f"""<h3 style="margin-bottom: 10px;">Real-time Bio-Stat <span class="time-badge">{last_updated_badge} 업데이트</span></h3>""",
+                unsafe_allow_html=True,
+            )
 
             hrv_icon = "🟢" if hrv_c >= 45 else "🔴"
             rhr_icon = "🟢" if rhr_c <= 65 else "🔴"
 
             dashboard_html = f"""
 <div style="display: flex; gap: 8px; margin-bottom: 20px; width: 100%;">
-<div style="flex: 1; background: #FFFFFF; padding: 12px 5px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
-<div style="font-size: 14px; color: #64748B; font-weight: 600; margin-bottom: 4px;">HRV</div>
-<div style="font-size: 33px; font-weight: 900; color: #1A2B4D; margin-bottom: 4px;">{hrv_c:.1f}</div>
-<div style="font-size: 11px; color: #64748B;">{hrv_icon} (평균:40)</div>
+<div style="flex: 1; background: #0d1627; padding: 12px 5px; border-radius: 12px; border: 1px solid #1f2d46; text-align: center;">
+<div style="font-size: 14px; color: #8fa8c7; font-weight: 600; margin-bottom: 4px;">HRV</div>
+<div style="font-size: 33px; font-weight: 900; color: #f8fafc; margin-bottom: 4px;">{hrv_c:.1f}</div>
+<div style="font-size: 11px; color: #8fa8c7;">{hrv_icon} (평균:40)</div>
 </div>
-<div style="flex: 1; background: #FFFFFF; padding: 12px 5px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
-<div style="font-size: 14px; color: #64748B; font-weight: 600; margin-bottom: 4px;">RHR</div>
-<div style="font-size: 33px; font-weight: 900; color: #1A2B4D; margin-bottom: 4px;">{rhr_c:.1f}</div>
-<div style="font-size: 11px; color: #64748B;">{rhr_icon} (평균:65)</div>
+<div style="flex: 1; background: #0d1627; padding: 12px 5px; border-radius: 12px; border: 1px solid #1f2d46; text-align: center;">
+<div style="font-size: 14px; color: #8fa8c7; font-weight: 600; margin-bottom: 4px;">RHR</div>
+<div style="font-size: 33px; font-weight: 900; color: #f8fafc; margin-bottom: 4px;">{rhr_c:.1f}</div>
+<div style="font-size: 11px; color: #8fa8c7;">{rhr_icon} (평균:65)</div>
 </div>
 <a href="?dash=makjang" style="flex:1; display:flex; align-items:stretch; text-decoration:none; color:inherit; -webkit-tap-highlight-color: transparent;">
-<div style="width:100%; min-height:100%; background: #FFFFFF; padding: 14px 8px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); cursor:pointer;">
-<div style="font-size: 14px; color: #64748B; font-weight: 600; margin-bottom: 4px;">일상 막장 지수</div>
-<div style="font-size: 33px; font-weight: 900; color: #1A2B4D; margin-bottom: 4px;">{mj_score}</div>
-<div style="font-size: 11px; color: #64748B;">/100 </div>
+<div style="width:100%; min-height:100%; background: #0d1627; padding: 14px 8px; border-radius: 12px; border: 1px solid #1f2d46; text-align: center; cursor:pointer;">
+<div style="font-size: 14px; color: #8fa8c7; font-weight: 600; margin-bottom: 4px;">일상 막장 지수</div>
+<div style="font-size: 33px; font-weight: 900; color: #f8fafc; margin-bottom: 4px;">{mj_score}</div>
+<div style="font-size: 11px; color: #8fa8c7;">/100 </div>
 </div>
 </a>
 </div>
@@ -5343,15 +6358,8 @@ with tab1:
                         save_checkin_cache(date_key, ck_res)
                         clear_old_caches()
 
-                generated_at = (ck_res or {}).get("generated_at_kst", "-")
-                checkin_lbl = f"{generated_at} 생성"
-
-                st.markdown(f"""
-                <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:10px;">
-                <h3 style="margin:0;">☀️ Daily Check-in</h3>
-                <span style="font-size:11px; color:#94a3b8;">({checkin_lbl})</span>
-                </div>
-                """, unsafe_allow_html=True)
+                generated_at = str((ck_res or {}).get("generated_at_kst", "") or "")
+                checkin_time = generated_at[11:16] if len(generated_at) >= 16 else now_kst.strftime('%H:%M')
 
                 try:
                     sprint = get_active_sprint()
@@ -5366,29 +6374,34 @@ with tab1:
                             )
                             if five:
                                 save_dailyfive_cache(date_key, sprint['sprint_id'], five)
+                        # DF 로그가 tasks 생성보다 먼저 들어온 경우를 포함해, 렌더 시점에 완료 상태를 재동기화
+                        try:
+                            _ = get_daily_five_completion(date_key, sprint['sprint_id'], df_a)
+                        except Exception as e:
+                            print("daily five completion sync (tab1 render) error:", e)
                 except:
                     pass
 
-                icon = {"Green":"🟢", "Red":"🔴"}.get((ck_res or {}).get("condition_signal"), "🟡")
                 headline = (ck_res or {}).get("headline") or "오늘 컨디션 체크"
                 headline_reason = (ck_res or {}).get("headline_reason") or ""
-
-                st.subheader(f"{icon} {headline}")
-
                 with st.container(border=True):
+                    st.markdown(
+                        f"""<h3 style="margin:0 0 8px 0;">☀️ Daily Check-in <span class="time-badge">{checkin_time} 생성</span></h3>""",
+                        unsafe_allow_html=True,
+                    )
+                    st.subheader(f"{headline}")
                     if headline_reason:
                         st.caption(f"근거: {headline_reason}")
-                    st.markdown(f"**🕵️ 분석:** {(ck_res or {}).get('analysis', '-')}")
-
-                st.write(""); st.markdown("**🎯 오늘의 전략**")
-
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.markdown(f"""<div class="strategy-box workout-box"><span class="strategy-title">💪 운동</span>{ck_res.get('mission_workout', "-")}</div>""", unsafe_allow_html=True)
-                with c2:
-                    st.markdown(f"""<div class="strategy-box diet-box"><span class="strategy-title">🥗 식단</span>{ck_res.get('mission_diet', "-")}</div>""", unsafe_allow_html=True)
-                with c3:
-                    st.markdown(f"""<div class="strategy-box recovery-box"><span class="strategy-title">🔋 회복</span>{ck_res.get('mission_recovery', "-")}</div>""", unsafe_allow_html=True)
+                    st.markdown(f"**분석:** {(ck_res or {}).get('analysis', '-')}")
+                    st.write("")
+                    st.markdown("**오늘의 전략**")
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.markdown(f"""<div class="strategy-box workout-box"><span class="strategy-title">운동</span>{ck_res.get('mission_workout', "-")}</div>""", unsafe_allow_html=True)
+                    with c2:
+                        st.markdown(f"""<div class="strategy-box diet-box"><span class="strategy-title">식단</span>{ck_res.get('mission_diet', "-")}</div>""", unsafe_allow_html=True)
+                    with c3:
+                        st.markdown(f"""<div class="strategy-box recovery-box"><span class="strategy-title">회복</span>{ck_res.get('mission_recovery', "-")}</div>""", unsafe_allow_html=True)
             else:
                 st.info(f"💤 데이터 대기 중 ({date_key})")
 
@@ -5430,13 +6443,7 @@ with tab1:
                 )
                 render_wrapup_block(wrapup_kind, wrapup, xc=xc)
             else:
-                daily_five_sig = ""
-                try:
-                    if sprint:
-                        df_focus = build_daily_five_focus_snapshot(date_key, sprint["sprint_id"], df_a)
-                        daily_five_sig = str(df_focus.get("signature", "") or "")
-                except Exception:
-                    daily_five_sig = ""
+                daily_five_sig = str(daily_five_focus.get("signature", "") or "")
                 # ✅ [FIX] Action Plan 호출: calendar를 logs에 섞어 넣지 말고 slots로 전달
                 ap = ai_generate_action_plan(
                     hrv_c, rhr_c, w_c,
@@ -5446,13 +6453,12 @@ with tab1:
                     daily_five_sig=daily_five_sig,
                 )
 
-                st.markdown(f"""<h3 style="margin-bottom: 10px;">⚡ Action Plan <span class="time-badge">{ap.get('generated_at', now_kst.strftime('%H:%M'))} 기준</span></h3>""", unsafe_allow_html=True)
-                if xc and (xc.get("xc_value_kg") is not None):
-                    st.caption(f"🎯 xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.1f}kg")
-
                 with st.container(border=True):
-                    st.markdown(f"**📊 Status:** {ap.get('current_analysis', '')}")
-                    st.markdown(f"**🚀 Do this:**\n{ap.get('next_actions', '').replace(chr(10), chr(10)*2)}")
+                    st.markdown(f"""<h3 style="margin-bottom: 10px;">Action Plan <span class="time-badge">{ap.get('generated_at', now_kst.strftime('%H:%M'))} 기준</span></h3>""", unsafe_allow_html=True)
+                    if xc and (xc.get("xc_value_kg") is not None):
+                        st.caption(f"xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.1f}kg")
+                    st.markdown(f"**Status:** {ap.get('current_analysis', '')}")
+                    st.markdown(f"**Do this:**\n{ap.get('next_actions', '').replace(chr(10), chr(10)*2)}")
                     if ap.get('warnings'):
                         st.error(f"⚠️ {ap['warnings']}")
         else:
@@ -5492,9 +6498,9 @@ with tab2:
                 sprint = get_active_sprint()
 
                 if not sprint:
-                    st.info("🎯 진행 중인 Sprint가 없습니다")
+                    st.info("진행 중인 Sprint가 없습니다")
                 else:
-                    st.markdown(f"### 🎯 Sprint: {sprint['name']}")
+                    st.markdown(f"### Sprint: {sprint['name']}")
 
                     date_key = get_mission_date_key()
 
@@ -5518,6 +6524,23 @@ with tab2:
                     )
                     xc = get_or_create_daily_xc(date_key, sprint, daily_state)
                     xc_value = xc.get("xc_value_kg") if xc else None
+                    try:
+                        df_focus_tab2 = build_daily_five_focus_snapshot(date_key, sprint["sprint_id"], df_action_tab2)
+                        daily_five_status_tab2 = {
+                            "has_plan": bool(df_focus_tab2.get("has_plan", False)),
+                            "completed": int(df_focus_tab2.get("completed", 0)),
+                            "total": int(df_focus_tab2.get("total", 0)),
+                            "completion_rate": float(df_focus_tab2.get("completion_rate", 0.0)),
+                        }
+                        persist_daily_sprint_progress(
+                            date_key=date_key,
+                            sprint_id=sprint["sprint_id"],
+                            daily_state=daily_state,
+                            daily_five_status=daily_five_status_tab2,
+                            sprint_progress=progress,
+                        )
+                    except Exception as e:
+                        print("persist daily sprint progress (tab2) error:", e)
 
                     if progress:
                         with st.container(border=True):
@@ -5531,19 +6554,21 @@ with tab2:
                             st.write("")
 
                             status_html = f"""
-                            <div style="display: flex; gap: 8px; margin-bottom: 16px;">
-                            <div style="flex: 1; background: #FFFFFF; padding: 12px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center;">
-                            <div style="font-size: 12px; color: #64748B; margin-bottom: 4px;">시작</div>
-                            <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{progress['weight_start']:.1f}kg</div>
+                            <div style="display: flex; gap: 8px; margin-bottom: 16px; width: 100%;">
+                            <div style="flex: 1; background: #0d1627; padding: 12px 5px; border-radius: 12px; border: 1px solid #1f2d46; text-align: center;">
+                            <div style="font-size: 14px; color: #8fa8c7; font-weight: 600; margin-bottom: 4px;">시작</div>
+                            <div style="font-size: 33px; font-weight: 900; color: #f8fafc; margin-bottom: 4px;">{progress['weight_start']:.1f}kg</div>
+                            <div style="font-size: 11px; color: #8fa8c7;">기준</div>
                             </div>
-                            <div style="flex: 1; background: #FFFFFF; padding: 12px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center;">
-                            <div style="font-size: 12px; color: #64748B; margin-bottom: 4px;">현재</div>
-                            <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{progress['weight_current']:.1f}kg</div>
-                            <div style="font-size: 11px; color: #3B82F6; margin-top: 4px;">{progress['weight_current'] - progress['weight_start']:.1f}kg</div>
+                            <div style="flex: 1; background: #0d1627; padding: 12px 5px; border-radius: 12px; border: 1px solid #1f2d46; text-align: center;">
+                            <div style="font-size: 14px; color: #8fa8c7; font-weight: 600; margin-bottom: 4px;">현재</div>
+                            <div style="font-size: 33px; font-weight: 900; color: #f8fafc; margin-bottom: 4px;">{progress['weight_current']:.1f}kg</div>
+                            <div style="font-size: 11px; color: #3B82F6;">{progress['weight_current'] - progress['weight_start']:.1f}kg</div>
                             </div>
-                            <div style="flex: 1; background: #FFFFFF; padding: 12px; border-radius: 12px; border: 1px solid #E2E8F0; text-align: center;">
-                            <div style="font-size: 12px; color: #64748B; margin-bottom: 4px;">목표</div>
-                            <div style="font-size: 22px; font-weight: 900; color: #1A2B4D;">{progress['weight_target']:.1f}kg</div>
+                            <div style="flex: 1; background: #0d1627; padding: 12px 5px; border-radius: 12px; border: 1px solid #1f2d46; text-align: center;">
+                            <div style="font-size: 14px; color: #8fa8c7; font-weight: 600; margin-bottom: 4px;">목표</div>
+                            <div style="font-size: 33px; font-weight: 900; color: #f8fafc; margin-bottom: 4px;">{progress['weight_target']:.1f}kg</div>
+                            <div style="font-size: 11px; color: #8fa8c7;">타깃</div>
                             </div>
                             </div>
                             """
@@ -5588,14 +6613,14 @@ with tab2:
                                 st.markdown(
                                     f"""
                                     <div style="
-                                        background: #EAF2FF;   /* 옅은 파랑 */
-                                        border: 1px solid #B6D0FF;
+                                        background: #111f36;
+                                        border: 1px solid #33527f;
                                         padding: 12px 14px;
                                         border-radius: 12px;
                                         margin: 6px 0 8px 0;
                                     ">
                                     <div style="
-                                        color: #DC2626;      /* 빨강 글씨 */
+                                        color: #fca5a5;
                                         font-weight: 900;
                                         font-size: 16px;
                                         line-height: 1.35;
@@ -5609,20 +6634,19 @@ with tab2:
                                 st.caption(f"💪 따라잡으려면: 하루 평균 -{progress['required_daily_pace']:.2f}kg 필요")
 
                             else:
-                                st.info(f"🎯 페이스 기준선 구간 ({remaining:.1f}kg 남음)")
+                                st.info(f"페이스 기준선 구간 ({remaining:.1f}kg 남음)")
 
                             linear_expected = progress["weight_expected"]
 
                             st.caption(f"📏 기계식 페이스 {linear_expected:.2f}kg")
 
                             if xc_value is not None:
-                                st.caption(f"🎯 xC(오늘 기대 변화량) {xc_value:.1f}kg")
+                                st.caption(f"xC(오늘 기대 변화량) {xc_value:.1f}kg")
                             else:
-                                st.caption("🎯 xC 계산값 없음")
+                                st.caption("xC 계산값 없음")
 
 
-                    st.markdown("### 💪🏽 Sprint: Daily Five")
-                    st.caption(f"🕐 {date_key} 05:00 생성")
+                    st.markdown("""<h3 style="margin-bottom: 10px;">Sprint: Daily Five <span class="time-badge">05:00 생성</span></h3>""", unsafe_allow_html=True)
 
                     cal_events = get_today_calendar_events(date_key)
                     available_slots = build_available_slots(date_key, cal_events)
@@ -5643,6 +6667,12 @@ with tab2:
                             clear_old_caches()
                     else:
                         daily_five = cached_five
+
+                    # DF 로그가 먼저 저장된 경우를 포함해, 화면 진입 시 completion 컬럼을 보정
+                    try:
+                        _ = get_daily_five_completion(date_key, sprint['sprint_id'], df_action_tab2)
+                    except Exception as e:
+                        print("daily five completion sync (tab2 render) error:", e)
 
                     if daily_five and 'tasks' in daily_five:
 
@@ -5671,34 +6701,24 @@ with tab2:
 
                         for idx, task in enumerate(daily_five['tasks'], start=1):
                             done = bool(done_map.get(idx, False))
-                            priority = task.get('priority', 5)
+                            icon = "✅" if done else "⬜"
                             if done:
-                                border_color = "#94A3B8"
-                                icon = "✅"
-                                bg_color = "#F1F5F9"
-                                title_color = "#475569"
-                                done_badge = '<span style="font-size:11px; font-weight:700; color:#334155; background:#E2E8F0; border-radius:8px; padding:2px 8px; margin-left:8px;">완료</span>'
-                            elif priority <= 2:
-                                border_color = "#EF4444"
-                                icon = "🔥"
-                                bg_color = "#FFFFFF"
-                                title_color = "#1A2B4D"
-                                done_badge = ""
+                                bg_color = "#111a2b"
+                                title_color = "#cbd5e1"
+                                done_badge = '<span style="font-size:11px; font-weight:700; color:#dbeafe; background:#334155; border-radius:8px; padding:2px 8px; margin-left:8px;">완료</span>'
                             else:
-                                border_color = "#3B82F6"
-                                icon = "⚡"
-                                bg_color = "#FFFFFF"
-                                title_color = "#1A2B4D"
+                                bg_color = "#0d1627"
+                                title_color = "#f8fafc"
                                 done_badge = ""
 
                             task_html = f"""
-                            <div style="background: {bg_color}; padding: 16px; border-radius: 12px; border-left: 4px solid {border_color}; margin-bottom: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                            <div style="background: {bg_color}; padding: 16px; border-radius: 12px; border: 1px solid #1f2d46; border-left: 4px solid #4b83d6; margin-bottom: 10px;">
                             <div style="display: flex; align-items: flex-start; gap: 12px;">
                             <div style="font-size: 24px; line-height: 1;">{icon}</div>
                             <div style="flex: 1;">
                             <div style="font-weight: 700; color: {title_color}; font-size: 16px; margin-bottom: 6px;">{task['title']}{done_badge}</div>
-                            <div style="font-size: 13px; color: #64748B; margin-bottom: 4px;">{task['description']}</div>
-                            <div style="font-size: 12px; color: #94A3B8; font-style: italic;">💡 {task['why']}</div>
+                            <div style="font-size: 13px; color: #9fb0c6; margin-bottom: 4px;">{task['description']}</div>
+                            <div style="font-size: 12px; color: #7f93b0; font-style: italic;">💡 {task['why']}</div>
                             </div>
                             </div>
                             </div>
@@ -5710,7 +6730,7 @@ with tab2:
 
                     st.divider()
 
-                    st.markdown("### 📅 앞으로의 계획")
+                    st.markdown("### 앞으로의 계획")
                     st.caption("현재 페이스 유지 시 예상")
 
                     with st.expander("내일 예상"):
@@ -5734,7 +6754,7 @@ with tab3:
     if "_today_summary_nonce" not in st.session_state:
         st.session_state["_today_summary_nonce"] = "0"
 
-    st.markdown("### 📊 오늘의 기록")
+    st.markdown("### 오늘의 기록")
 
     @st.cache_data(ttl=300)
     def get_today_summary(date_str, nonce="0"):
@@ -5767,19 +6787,19 @@ with tab3:
 
     summary_html = f"""
     <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
-      <div style="flex:1; min-width:140px; background:#FFFFFF; padding:14px 8px; border-radius:12px; border:1px solid #E2E8F0; text-align:center; box-shadow:0 1px 2px rgba(0,0,0,0.05);">
-        <div style="font-size:12px; color:#64748B; font-weight:600; margin-bottom:6px;">섭취 칼로리</div>
-        <div style="font-size:22px; font-weight:900; color:#1A2B4D;">{summary['calories']} kcal</div>
+      <div style="flex:1; min-width:140px; background:#0d1627; padding:14px 8px; border-radius:12px; border:1px solid #1f2d46; text-align:center;">
+        <div style="font-size:12px; color:#8fa8c7; font-weight:600; margin-bottom:6px;">섭취 칼로리</div>
+        <div style="font-size:22px; font-weight:900; color:#f8fafc;">{summary['calories']} kcal</div>
       </div>
 
-      <div style="flex:1; min-width:140px; background:#FFFFFF; padding:14px 8px; border-radius:12px; border:1px solid #E2E8F0; text-align:center; box-shadow:0 1px 2px rgba(0,0,0,0.05);">
-        <div style="font-size:12px; color:#64748B; font-weight:600; margin-bottom:6px;">운동 시간</div>
-        <div style="font-size:22px; font-weight:900; color:#1A2B4D;">{summary['minutes']} 분</div>
+      <div style="flex:1; min-width:140px; background:#0d1627; padding:14px 8px; border-radius:12px; border:1px solid #1f2d46; text-align:center;">
+        <div style="font-size:12px; color:#8fa8c7; font-weight:600; margin-bottom:6px;">운동 시간</div>
+        <div style="font-size:22px; font-weight:900; color:#f8fafc;">{summary['minutes']} 분</div>
       </div>
 
-      <div style="flex:1; min-width:140px; background:#FFFFFF; padding:14px 8px; border-radius:12px; border:1px solid #E2E8F0; text-align:center; box-shadow:0 1px 2px rgba(0,0,0,0.05);">
-        <div style="font-size:12px; color:#64748B; font-weight:600; margin-bottom:6px;">Dry Feb</div>
-        <div style="font-size:22px; font-weight:900; color:#1A2B4D;">{now_kst.day}/28일</div>
+      <div style="flex:1; min-width:140px; background:#0d1627; padding:14px 8px; border-radius:12px; border:1px solid #1f2d46; text-align:center;">
+        <div style="font-size:12px; color:#8fa8c7; font-weight:600; margin-bottom:6px;">Dry Feb</div>
+        <div style="font-size:22px; font-weight:900; color:#f8fafc;">{now_kst.day}/28일</div>
       </div>
     </div>
     """
@@ -5787,7 +6807,7 @@ with tab3:
 
     st.divider()
 
-    st.markdown("### ✍️ 기록하기")
+    st.markdown("### 기록하기")
 
     default_date = now_kst.date()
     default_hour = now_kst.hour
@@ -5830,7 +6850,7 @@ with tab3:
 
     st.divider()
 
-    with st.expander("📂 아카이브", expanded=False):
+    with st.expander("아카이브", expanded=False):
 
         @st.cache_data(ttl=300)
         def load_archive_data():
@@ -5856,8 +6876,7 @@ with tab3:
 # [TAB 4] Pit Wall
 # =========================================================
 with tab4:
-    st.markdown("## 🏎️ The Pit Wall")
-    st.caption("Custom 8-week cardio experiment board")
+    st.markdown("## The Pit Wall")
 
     pit_start = None
     try:
@@ -5906,9 +6925,7 @@ with tab4:
     )
     render_pitwall_cardio_experiment(pit_board)
 
-    st.divider()
-
-    with st.expander("🛠️ 개발자 도구", expanded=False):
+    with st.expander("개발자 도구", expanded=False):
         st.write("server now:", datetime.now())
         st.write("kst now:", get_current_kst())
         st.write("experiment start:", pit_start)
@@ -5945,3 +6962,184 @@ with tab4:
             st.cache_data.clear()
             st.cache_resource.clear()
             st.success("캐시 클리어 완료!")
+
+
+# =========================================================
+# [TAB 5] Player's Box
+# =========================================================
+with tab5:
+    st.markdown("## Player's Box")
+    pit_date_key = get_mission_date_key()
+    pit_sprint = get_active_sprint()
+    pit_sprint_id = str((pit_sprint or {}).get("sprint_id", "") or "")
+    pit_cached = load_pit_chat_cache(pit_date_key)
+    pit_cached_history = list(pit_cached.get("history", []) or [])
+    pit_cached_pending = pit_cached.get("pending_patch")
+
+    current_chat_date_key = str(st.session_state.get("pit_chat_date_key", "") or "")
+    if current_chat_date_key != pit_date_key:
+        st.session_state["pit_chat_date_key"] = pit_date_key
+        st.session_state["pit_chat_history"] = pit_cached_history
+        st.session_state["pit_pending_patch"] = pit_cached_pending if isinstance(pit_cached_pending, dict) else None
+    else:
+        if "pit_chat_history" not in st.session_state:
+            st.session_state["pit_chat_history"] = pit_cached_history
+        if "pit_pending_patch" not in st.session_state:
+            st.session_state["pit_pending_patch"] = pit_cached_pending if isinstance(pit_cached_pending, dict) else None
+
+    _, top_reset = st.columns([0.84, 0.16])
+    with top_reset:
+        if st.button("대화 초기화", width="stretch", key="pit_clear_chat_btn"):
+            st.session_state["pit_chat_history"] = []
+            st.session_state["pit_pending_patch"] = None
+            clear_pit_chat_cache(pit_date_key)
+            st.session_state["pit_patch_feedback"] = {"ok": True, "msg": "상담 기록을 초기화했습니다."}
+            st.rerun()
+
+    pit_feedback = st.session_state.pop("pit_patch_feedback", None)
+    if pit_feedback:
+        if pit_feedback.get("ok"):
+            st.success(str(pit_feedback.get("msg", "반영 완료")))
+        else:
+            st.warning(str(pit_feedback.get("msg", "반영 실패")))
+
+    with st.container(border=True):
+        history = list(st.session_state.get("pit_chat_history", []) or [])
+        chat_html = ['<div class="pit-chat-panel">']
+        if history:
+            for m in history[-16:]:
+                role = str(m.get("role", "user"))
+                text = str(m.get("text", "") or "").strip()
+                if not text:
+                    continue
+                safe_text = _html_escape(text)
+                if role == "assistant":
+                    ts = str(m.get("ts", "") or "")
+                    chat_html.append(
+                        '<div class="pit-msg-row pit-msg-row-coach">'
+                        + '<div class="pit-bubble pit-bubble-coach">'
+                        + '<div class="pit-bubble-tag">COACH</div>'
+                        + f'{safe_text}'
+                        + (f'<div class="pit-bubble-tag" style="margin-top:6px; margin-bottom:0;">{_html_escape(ts)}</div>' if ts else "")
+                        + '</div>'
+                        + '</div>'
+                    )
+                else:
+                    ts = str(m.get("ts", "") or "")
+                    chat_html.append(
+                        '<div class="pit-msg-row pit-msg-row-user">'
+                        + '<div class="pit-bubble pit-bubble-user">'
+                        + '<div class="pit-bubble-tag">YOU</div>'
+                        + f'{safe_text}'
+                        + (f'<div class="pit-bubble-tag" style="margin-top:6px; margin-bottom:0;">{_html_escape(ts)}</div>' if ts else "")
+                        + '</div>'
+                        + '</div>'
+                    )
+        else:
+            chat_html.append('<div class="pit-empty">아직 상담 기록이 없습니다.</div>')
+        chat_html.append('</div>')
+        st.markdown("".join(chat_html), unsafe_allow_html=True)
+
+    def _pit_submit_message(raw_msg):
+        q = str(raw_msg or "").strip()
+        if not q:
+            st.warning("상담 내용을 입력해 주세요.")
+            return
+        consult_ctx = build_pitwall_consult_context(
+            pit_date_key,
+            str(st.session_state.get("_today_summary_nonce", "0")),
+        )
+        with st.spinner("코치가 상황을 분석 중입니다..."):
+            ai_consult = ai_generate_pitwall_consultation(
+                user_message=q,
+                consult_context=consult_ctx,
+                chat_history=st.session_state.get("pit_chat_history", []),
+            )
+        ts_now = get_current_kst().strftime("%H:%M")
+        st.session_state["pit_chat_history"] = (
+            list(st.session_state.get("pit_chat_history", []))
+            + [{"role": "user", "text": q, "ts": ts_now}, {"role": "assistant", "text": str(ai_consult.get("coach_reply", "") or ""), "ts": ts_now}]
+        )
+        patch_obj = ai_consult.get("plan_patch", {}) or {}
+        if bool(patch_obj.get("enabled")) and list(patch_obj.get("changes", []) or []):
+            st.session_state["pit_pending_patch"] = patch_obj
+        save_pit_chat_cache(
+            pit_date_key,
+            st.session_state.get("pit_chat_history", []),
+            st.session_state.get("pit_pending_patch"),
+        )
+        st.rerun()
+
+    st.caption("빠른 상담")
+    q1, q2 = st.columns(2)
+    with q1:
+        if st.button("DF 우선 재정렬", width="stretch", key="pit_quick_df"):
+            _pit_submit_message("남은 DF 항목 기준으로 오늘 우선순위를 다시 잡아 주세요.")
+    with q2:
+        if st.button("일정 기준 수정", width="stretch", key="pit_quick_schedule"):
+            _pit_submit_message("오늘 캘린더/슬롯 기준으로 실행 가능한 계획으로 다시 맞춰 주세요.")
+    q3, q4 = st.columns(2)
+    with q3:
+        if st.button("위기 모드", width="stretch", key="pit_quick_crisis"):
+            _pit_submit_message("지금 페이스가 무너진 기준으로 강하게 경고하고 즉시 행동 1개를 제시해 주세요.")
+    with q4:
+        if st.button("계획 패치 제안", width="stretch", key="pit_quick_patch"):
+            _pit_submit_message("오늘 Daily Five task_1~task_5 수정안을 JSON patch로 제시해 주세요.")
+
+    with st.form("pit_coach_chat_form", clear_on_submit=True):
+        in_col, send_col = st.columns([0.88, 0.12])
+        with in_col:
+            pit_user_msg = st.text_input(
+                "상담 입력",
+                placeholder="메시지를 입력하세요. 예) 오늘 남은 시간 기준으로 딱 1개 행동만 제시해줘",
+                label_visibility="collapsed",
+            )
+        with send_col:
+            pit_send = st.form_submit_button("➤", width="stretch", type="primary")
+
+    if pit_send:
+        _pit_submit_message(pit_user_msg)
+
+    pending_patch = st.session_state.get("pit_pending_patch")
+    if pending_patch and bool(pending_patch.get("enabled")):
+        st.markdown("### Plan Patch Preview")
+        with st.container(border=True):
+            patch_date = str(pending_patch.get("date_key", pit_date_key) or pit_date_key)
+            patch_reason = str(pending_patch.get("reason", "") or "").strip()
+            st.caption(f"대상 일자: {patch_date}" + (f" | 사유: {patch_reason}" if patch_reason else ""))
+
+            for i, ch in enumerate(list(pending_patch.get("changes", []) or []), start=1):
+                task_id = str(ch.get("task_id", "") or "")
+                updates = []
+                for src, col in PITWALL_PATCH_FIELD_MAP.items():
+                    if src in ch:
+                        updates.append(f"{col}={ch.get(src)}")
+                st.markdown(f"{i}. `{task_id}` -> " + (", ".join(updates) if updates else "(변경 없음)"))
+
+            c_apply, c_drop = st.columns(2)
+            with c_apply:
+                if st.button("✅ 수정안 반영", width="stretch", key="pit_patch_apply_btn"):
+                    if not pit_sprint_id:
+                        st.session_state["pit_patch_feedback"] = {"ok": False, "msg": "활성 스프린트가 없어 반영할 수 없습니다."}
+                    else:
+                        patch_apply = dict(pending_patch)
+                        patch_apply["date_key"] = patch_date
+                        applied = apply_pitwall_plan_patch(pit_sprint_id, patch_apply)
+                        st.session_state["pit_patch_feedback"] = {"ok": bool(applied.get("ok")), "msg": str(applied.get("message", ""))}
+                    st.session_state["pit_pending_patch"] = None
+                    save_pit_chat_cache(
+                        pit_date_key,
+                        st.session_state.get("pit_chat_history", []),
+                        st.session_state.get("pit_pending_patch"),
+                    )
+                    st.rerun()
+            with c_drop:
+                if st.button("🗑️ 수정안 폐기", width="stretch", key="pit_patch_drop_btn"):
+                    st.session_state["pit_pending_patch"] = None
+                    st.session_state["pit_patch_feedback"] = {"ok": True, "msg": "수정안을 폐기했습니다."}
+                    save_pit_chat_cache(
+                        pit_date_key,
+                        st.session_state.get("pit_chat_history", []),
+                        st.session_state.get("pit_pending_patch"),
+                    )
+                    st.rerun()
