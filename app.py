@@ -687,6 +687,9 @@ def polish_korean_coaching_text(text: str) -> str:
         "체중 변화를 유도": "체중 감량 흐름을 다시 만들",
         "측정치": "지표",
         "컨트롤": "관리",
+        "과식 차단": "과식 줄이기",
+        "야식 차단": "야식 줄이기",
+        "추가 섭취 차단": "추가 섭취 줄이기",
         "패턴 반복을 차단": "같은 패턴을 끊",
         "실시하십시오": "해 주세요",
         "수행하십시오": "해 주세요",
@@ -3148,9 +3151,10 @@ def render_pitwall_cardio_experiment(board):
 .pwx-wrap { background:#070d18; color:#dbeafe; border:1px solid #1b2638; border-radius:18px; padding:14px; margin-top:8px; }
 .pwx-title { font-size:48px; font-weight:800; color:#f8fafc; margin:0; line-height:1.02; letter-spacing:-0.8px; }
 .pwx-sub { color:#8fa8c7; font-size:14px; margin-top:6px; margin-bottom:10px; }
-.pwx-kpis { margin:-2px 0 10px; color:#e2e8f0; font-size:28px; font-weight:800; letter-spacing:-0.6px; line-height:1.1; }
-.pwx-kpis span { color:#f8fafc; }
-.pwx-kpis .sep { color:#5f789a; padding:0 10px; font-weight:600; }
+.pwx-metrics { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; margin:0 0 10px; }
+.pwx-metric { background:#0d1627; border:1px solid #1f2d46; border-radius:12px; padding:10px 12px; min-height:84px; }
+.pwx-metric-k { color:#8ba0bd; font-size:11px; letter-spacing:1px; text-transform:uppercase; font-weight:700; margin-bottom:6px; }
+.pwx-metric-v { color:#f8fafc; font-size:clamp(28px, 3.4vw, 44px); font-weight:800; line-height:1; letter-spacing:-0.8px; white-space:nowrap; }
 .pwx-legend { display:flex; gap:14px; color:#9fb0c6; font-size:13px; margin:4px 0 8px; }
 .pwx-dot { width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:6px; vertical-align:middle; }
 .pwx-dot-z2 { background:#4ade80; } .pwx-dot-hiit { background:#fb7185; } .pwx-dot-today { border:1px solid #60a5fa; background:transparent; }
@@ -3177,7 +3181,9 @@ def render_pitwall_cardio_experiment(board):
 .pwx-right-rhr-warn { color:#fca5a5; }
 @media (max-width: 980px) {
   .pwx-title { font-size:42px; }
-  .pwx-kpis { font-size:22px; }
+  .pwx-metric { min-height:76px; padding:9px 10px; }
+  .pwx-metric-k { font-size:10px; margin-bottom:5px; }
+  .pwx-metric-v { font-size:clamp(22px, 7.2vw, 34px); }
   .pwx-week { grid-template-columns:1fr; }
   .pwx-right { text-align:left; }
 }
@@ -3196,13 +3202,26 @@ def render_pitwall_cardio_experiment(board):
     target_z2 = _safe_int(board.get("target_zone2_min", 0), 0)
     week_now = _safe_int(board.get("current_week", 1), 1)
     week_total = _safe_int(board.get("weeks_total", 8), 8)
+    html_parts.append('<div class="pwx-metrics">')
     html_parts.append(
-        '<div class="pwx-kpis">'
-        f'<span>{total_z2}m</span><span class="sep">·</span>'
-        f'<span>{target_z2}m</span><span class="sep">·</span>'
-        f'<span>{week_now}/{week_total}</span>'
+        '<div class="pwx-metric">'
+        '<div class="pwx-metric-k">TOTAL Z2</div>'
+        f'<div class="pwx-metric-v">{total_z2}m</div>'
         '</div>'
     )
+    html_parts.append(
+        '<div class="pwx-metric">'
+        '<div class="pwx-metric-k">TARGET</div>'
+        f'<div class="pwx-metric-v">{target_z2}m</div>'
+        '</div>'
+    )
+    html_parts.append(
+        '<div class="pwx-metric">'
+        '<div class="pwx-metric-k">WEEK</div>'
+        f'<div class="pwx-metric-v">{week_now}/{week_total}</div>'
+        '</div>'
+    )
+    html_parts.append('</div>')
     html_parts.append(
         '<div class="pwx-legend">'
         '<span><i class="pwx-dot pwx-dot-z2"></i>Zone 2</span>'
@@ -3860,7 +3879,7 @@ def build_rule_based_action_plan(daily_state, daily_five_focus=None):
     ]
     xc = (daily_state.get("xc", {}) or {}).get("xc_value_kg")
     if xc is not None:
-        lines.append(f"참고 지표: 오늘 xC는 {float(xc):.1f}kg 기준입니다.")
+        lines.append(f"참고 지표: 오늘 xC는 {float(xc):.2f}kg 기준입니다.")
     df_focus = daily_five_focus or {}
     if bool(df_focus.get("has_plan")):
         lines.append(f"DF 상태: {str(df_focus.get('summary_line', '')).strip()}")
@@ -3942,6 +3961,11 @@ DEFAULT_TRAINING_MODE: {default_mode}
 - available_slots 사실과 모순되지 않아야 합니다.
 - 표현과 전략은 자율적으로 구성하십시오.
 - 5개 모두 구체적이고 실행 가능한 과제로 작성하십시오.
+- 각 과제는 "제목(title)" + "실행(description)" 두 요소만 명확히 작성하십시오.
+- description에는 가능한 시간대/분량/장소 중 최소 2개를 포함해, 바로 행동 가능한 문장으로 작성하십시오.
+- why에는 해당 과제가 오늘 스프린트 달성에 왜 중요한지 1문장으로 작성하십시오.
+- "운동하십시오", "관리하세요" 같은 일반론 문장만 단독으로 쓰지 마십시오.
+- 번역투/부자연스러운 표현(예: 과식 차단)을 피하고 자연스러운 한국어를 사용하십시오.
 - 어제 운동 기록이 있으면 강점 1개 + 보완점 1개를 daily_message에 짧게 반영하십시오.
 - today_training_mode는 오늘의 기본 방향(soft anchor)으로 제시하십시오.
 - json 객체 1개만 출력하십시오.
@@ -3954,7 +3978,7 @@ DEFAULT_TRAINING_MODE: {default_mode}
       "category": "workout/diet/recovery",
       "priority": 1,
       "title": "...",
-      "description": "...",
+      "description": "실행: ...",
       "why": "..."
     }}
   ],
@@ -3975,6 +3999,20 @@ DEFAULT_TRAINING_MODE: {default_mode}
         for i, task in enumerate(result.get('tasks', [])):
             if 'task_id' not in task:
                 task['task_id'] = f"task_{i+1}"
+            title = polish_korean_coaching_text(str(task.get("title", "") or "").strip())
+            desc = polish_korean_coaching_text(str(task.get("description", "") or "").strip())
+            why = polish_korean_coaching_text(str(task.get("why", "") or "").strip())
+            if not desc and title:
+                desc = f"실행: {title}"
+            if desc and (not desc.startswith("실행:")):
+                desc = f"실행: {desc}"
+            if not why:
+                why = "오늘 스프린트 목표 달성 확률을 높이는 핵심 행동입니다."
+            task["title"] = title
+            task["description"] = desc
+            task["why"] = why
+
+        result["daily_message"] = polish_korean_coaching_text(str(result.get("daily_message", "") or "").strip())
 
         mode = str(result.get("today_training_mode", "") or "").strip().lower()
         if mode not in {"recovery", "build", "push"}:
@@ -5514,7 +5552,7 @@ def build_rule_based_wrapup(kind, payload):
         if (prev_gap is not None) and (_safe_float(prev_gap, 0.0) > 0):
             warning = (warning + " " if warning else "") + f"전일 xC 미달분 {_safe_float(prev_gap, 0.0):.2f}kg가 남아 있습니다."
         if xc_val is not None:
-            critique = f"{critique} 오늘 xC 기준은 {float(xc_val):.1f}kg였습니다."
+            critique = f"{critique} 오늘 xC 기준은 {float(xc_val):.2f}kg였습니다."
         if xc_reason:
             critique = f"{critique} xC 근거: {str(xc_reason[0])}."
 
@@ -5743,7 +5781,7 @@ def render_wrapup_block(kind, wrapup, xc=None):
         unsafe_allow_html=True,
     )
     if xc and (xc.get("xc_value_kg") is not None):
-        st.caption(f"xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.1f}kg")
+        st.caption(f"xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.2f}kg")
 
     with st.container(border=True):
         st.markdown(f"**종합 평가:** {wrapup.get('overview', '-')}")
@@ -6338,6 +6376,12 @@ with tab1:
                         current_rhr=rhr_c,
                     )
                     xc = get_or_create_daily_xc(date_key, sprint, daily_state)
+                    if xc and (xc.get("xc_value_kg") is not None):
+                        daily_state["xc"] = {
+                            "xc_value_kg": float(xc.get("xc_value_kg")),
+                            "xc_reason": list(xc.get("xc_reason", []) or []),
+                        }
+                        daily_state["urgency"] = compute_urgency(daily_state)
             except Exception as e:
                 print("xC error:", e)
                 xc = None
@@ -6554,7 +6598,7 @@ with tab1:
                 with st.container(border=True):
                     st.markdown(f"""<h3 style="margin-bottom: 10px;">Action Plan <span class="time-badge">{ap.get('generated_at', now_kst.strftime('%H:%M'))} 기준</span></h3>""", unsafe_allow_html=True)
                     if xc and (xc.get("xc_value_kg") is not None):
-                        st.caption(f"xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.1f}kg")
+                        st.caption(f"xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.2f}kg")
                     st.markdown(f"**지금 상황:** {ap.get('current_analysis', '')}")
                     st.markdown(f"**지금 할 일:**\n{ap.get('next_actions', '').replace(chr(10), chr(10)*2)}")
                     if ap.get('warnings'):
@@ -6621,6 +6665,12 @@ with tab2:
                         current_rhr=current_rhr,
                     )
                     xc = get_or_create_daily_xc(date_key, sprint, daily_state)
+                    if xc and (xc.get("xc_value_kg") is not None):
+                        daily_state["xc"] = {
+                            "xc_value_kg": float(xc.get("xc_value_kg")),
+                            "xc_reason": list(xc.get("xc_reason", []) or []),
+                        }
+                        daily_state["urgency"] = compute_urgency(daily_state)
                     xc_value = xc.get("xc_value_kg") if xc else None
                     try:
                         df_focus_tab2 = build_daily_five_focus_snapshot(date_key, sprint["sprint_id"], df_action_tab2)
@@ -6748,7 +6798,7 @@ with tab2:
                             st.caption(f"📏 기계식 페이스 {linear_expected:.2f}kg")
 
                             if xc_value is not None:
-                                st.caption(f"xC(오늘 기대 변화량) {xc_value:.1f}kg")
+                                st.caption(f"xC(오늘 기대 변화량) {xc_value:.2f}kg")
                             else:
                                 st.caption("xC 계산값 없음")
 
@@ -6809,6 +6859,11 @@ with tab2:
                         for idx, task in enumerate(daily_five['tasks'], start=1):
                             done = bool(done_map.get(idx, False))
                             icon = "✅" if done else "⬜"
+                            display_title = polish_korean_coaching_text(str(task.get("title", "") or "").strip())
+                            display_desc = polish_korean_coaching_text(str(task.get("description", "") or "").strip())
+                            display_why = polish_korean_coaching_text(str(task.get("why", "") or "").strip())
+                            if display_desc and (not display_desc.startswith("실행:")):
+                                display_desc = f"실행: {display_desc}"
                             if done:
                                 bg_color = "#111a2b"
                                 title_color = "#cbd5e1"
@@ -6823,9 +6878,9 @@ with tab2:
                             <div style="display: flex; align-items: flex-start; gap: 12px;">
                             <div style="font-size: 24px; line-height: 1;">{icon}</div>
                             <div style="flex: 1;">
-                            <div style="font-weight: 700; color: {title_color}; font-size: 16px; margin-bottom: 6px;">{task['title']}{done_badge}</div>
-                            <div style="font-size: 13px; color: #9fb0c6; margin-bottom: 4px;">{task['description']}</div>
-                            <div style="font-size: 12px; color: #7f93b0; font-style: italic;">💡 {task['why']}</div>
+                            <div style="font-weight: 700; color: {title_color}; font-size: 16px; margin-bottom: 6px;">{display_title}{done_badge}</div>
+                            <div style="font-size: 13px; color: #9fb0c6; margin-bottom: 2px;">{display_desc}</div>
+                            {f'<div style="font-size: 12px; color: #7f93b0; font-style: italic;">💡 {display_why}</div>' if display_why else ''}
                             </div>
                             </div>
                             </div>
