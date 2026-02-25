@@ -1136,6 +1136,49 @@ def _safe_float(v, default=0.0):
         return default
 
 
+def _safe_float_or_none(v):
+    try:
+        n = float(v)
+        if (n != n) or (n == float("inf")) or (n == float("-inf")):
+            return None
+        return n
+    except:
+        return None
+
+
+def _latest_health_values(df_health, defaults=None, columns=None):
+    """
+    Health_Log에서 각 컬럼의 '가장 최근 유효 숫자'를 역순 탐색해 반환.
+    빈 문자열/NaN은 건너뛰고, 없으면 defaults를 사용한다.
+    """
+    cols = list(columns or ["Weight", "HRV", "RHR"])
+    defaults = dict(defaults or {})
+
+    out = {}
+    for c in cols:
+        out[c] = _safe_float(defaults.get(c, 0.0), 0.0)
+
+    if df_health is None or df_health.empty:
+        return out
+
+    found = set()
+    for i in range(len(df_health) - 1, -1, -1):
+        row = df_health.iloc[i]
+        for c in cols:
+            if c in found:
+                continue
+            v = row.get(c, None) if hasattr(row, "get") else None
+            n = _safe_float_or_none(v)
+            if n is None:
+                continue
+            out[c] = n
+            found.add(c)
+        if len(found) == len(cols):
+            break
+
+    return out
+
+
 def _to_boolish(v):
     s = str(v).strip().lower()
     return s in {"1", "true", "t", "y", "yes", "done", "완료"}
@@ -4675,10 +4718,10 @@ def build_pitwall_consult_context(date_key, context_nonce="0"):
     hrv = 0.0
     rhr = 0.0
     if not df_health.empty:
-        last_h = df_health.iloc[-1]
-        weight = _safe_float(last_h.get("Weight", 0.0), 0.0)
-        hrv = _safe_float(last_h.get("HRV", 0.0), 0.0)
-        rhr = _safe_float(last_h.get("RHR", 0.0), 0.0)
+        latest = _latest_health_values(df_health)
+        weight = latest["Weight"]
+        hrv = latest["HRV"]
+        rhr = latest["RHR"]
 
     progress = None
     try:
@@ -5191,10 +5234,10 @@ def summarize_health_for_day(df_health, date_key, current_weight, current_hrv, c
     day = df[df["Date_Key"] == date_key]
     if day.empty:
         return out
-    row = day.iloc[-1]
-    out["weight"] = _safe_float(row.get("Weight", out["weight"]), out["weight"])
-    out["hrv"] = _safe_float(row.get("HRV", out["hrv"]), out["hrv"])
-    out["rhr"] = _safe_float(row.get("RHR", out["rhr"]), out["rhr"])
+    vals = _latest_health_values(day, defaults={"Weight": out["weight"], "HRV": out["hrv"], "RHR": out["rhr"]})
+    out["weight"] = vals["Weight"]
+    out["hrv"] = vals["HRV"]
+    out["rhr"] = vals["RHR"]
     return out
 
 
@@ -6351,10 +6394,10 @@ with tab1:
             today_acts = [f"[{r['Action_Time']}] {r['Category']}: {r['User_Input']}" for _, r in today_logs.iterrows()]
 
             # 3) Health 최신값 (w_c 먼저!)
-            last_h = df_h.iloc[-1]
-            hrv_c = float(last_h.get('HRV', 0))
-            rhr_c = float(last_h.get('RHR', 0))
-            w_c   = float(last_h.get('Weight', 0))
+            latest_health = _latest_health_values(df_h)
+            hrv_c = latest_health["HRV"]
+            rhr_c = latest_health["RHR"]
+            w_c   = latest_health["Weight"]
 
             # 4) xC 계산
             xc = None
@@ -6420,6 +6463,7 @@ with tab1:
             
             mj = compute_makjang_3day_score(date_key, df_a)
             mj_score = mj["score"]
+            last_h = df_h.iloc[-1]
             last_updated_raw = str(last_h.get('Date', '') or '').strip()
             last_updated_badge = now_kst.strftime('%H:%M')
             try:
@@ -6474,8 +6518,14 @@ with tab1:
             today_h = df_h[df_h['Date_Clean'] == date_key]
 
             if not today_h.empty:
-                m_row = today_h.iloc[0]
-                m_ctx = prepare_full_context(df_h, df_a, float(m_row['Weight']), True)
+                today_latest = _latest_health_values(
+                    today_h,
+                    defaults={"Weight": w_c, "HRV": hrv_c, "RHR": rhr_c}
+                )
+                m_weight = today_latest["Weight"]
+                m_hrv = today_latest["HRV"]
+                m_rhr = today_latest["RHR"]
+                m_ctx = prepare_full_context(df_h, df_a, m_weight, True)
 
                 # checkin은 UI 참고용 텍스트 유지(여기까지는 트러블 포인트 아님)
                 cal_txt = "\n".join(
@@ -6488,9 +6538,9 @@ with tab1:
                     with st.spinner("Analyzing..."):
                         ck_res = ai_generate_daily_checkin(
                             date_key,
-                            float(m_row['HRV']),
-                            float(m_row['RHR']),
-                            float(m_row['Weight']),
+                            m_hrv,
+                            m_rhr,
+                            m_weight,
                             m_ctx,
                             cal_txt
                         )
@@ -6510,7 +6560,7 @@ with tab1:
                             five = ai_generate_daily_five(
                                 date_key,
                                 sprint,
-                                {'weight': float(m_row['Weight']), 'hrv': float(m_row['HRV']), 'rhr': float(m_row['RHR'])},
+                                {'weight': m_weight, 'hrv': m_hrv, 'rhr': m_rhr},
                                 {'available_slots': available_slots, 'yesterday_workout_review': ywr}  # ✅ [FIX]
                             )
                             if five:
@@ -6621,11 +6671,11 @@ with tab2:
                 df_h = pd.DataFrame(sh_h.get_all_records())
                 if df_h.empty:
                     return None
-                last = df_h.iloc[-1]
+                latest = _latest_health_values(df_h)
                 return {
-                    'weight': float(last['Weight']),
-                    'hrv': float(last.get('HRV', 0)),
-                    'rhr': float(last.get('RHR', 0))
+                    'weight': latest["Weight"],
+                    'hrv': latest["HRV"],
+                    'rhr': latest["RHR"]
                 }
 
             health_data = get_current_health_data()
@@ -7117,7 +7167,7 @@ with tab4:
                 progress_dbg = None
                 if sprint_dbg:
                     df_health_dbg = pd.DataFrame(get_db_connection("Health_Log").get_all_records())
-                    current_w_dbg = float(df_health_dbg.iloc[-1].get("Weight", 0)) if not df_health_dbg.empty else 0.0
+                    current_w_dbg = (_latest_health_values(df_health_dbg)["Weight"] if not df_health_dbg.empty else 0.0)
                     progress_dbg = calculate_sprint_progress(sprint_dbg, current_w_dbg)
 
                 ds_dbg = build_daily_state(
