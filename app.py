@@ -1179,6 +1179,50 @@ def _latest_health_values(df_health, defaults=None, columns=None):
     return out
 
 
+def _get_health_last_update_badge(df_health, default_dt=None):
+    """
+    Health_Log 기준 업데이트 배지(HH:MM)를 계산한다.
+    우선순위: Date+Time -> Date -> Hour_Key -> 기본(now).
+    """
+    base_dt = default_dt if isinstance(default_dt, datetime) else get_current_kst()
+    default_badge = base_dt.strftime("%H:%M")
+
+    if df_health is None or df_health.empty:
+        return default_badge
+
+    try:
+        df = df_health.copy()
+        if "Date" not in df.columns:
+            return default_badge
+
+        date_part = df["Date"].astype(str).str.strip()
+        if "Time" in df.columns:
+            time_part = df["Time"].astype(str).str.strip()
+            ts = pd.to_datetime(date_part + " " + time_part, errors="coerce")
+        else:
+            ts = pd.to_datetime(date_part, errors="coerce")
+
+        ts_date_only = pd.to_datetime(date_part, errors="coerce")
+        ts = ts.where(ts.notna(), ts_date_only)
+
+        if "Hour_Key" in df.columns:
+            hk = (
+                df["Hour_Key"]
+                .astype(str)
+                .str.extract(r"(\d{4}-\d{2}-\d{2})[_ ](\d{1,2})", expand=True)
+            )
+            hk_ts = pd.to_datetime(hk[0] + " " + hk[1] + ":00", errors="coerce")
+            ts = ts.where(ts.notna(), hk_ts)
+
+        valid = ts.dropna()
+        if not valid.empty:
+            return valid.max().strftime("%H:%M")
+    except Exception:
+        pass
+
+    return default_badge
+
+
 def _to_boolish(v):
     s = str(v).strip().lower()
     return s in {"1", "true", "t", "y", "yes", "done", "완료"}
@@ -6463,19 +6507,7 @@ with tab1:
             
             mj = compute_makjang_3day_score(date_key, df_a)
             mj_score = mj["score"]
-            last_h = df_h.iloc[-1]
-            last_updated_raw = str(last_h.get('Date', '') or '').strip()
-            last_updated_badge = now_kst.strftime('%H:%M')
-            try:
-                ts = pd.to_datetime(last_updated_raw, errors='coerce')
-                if pd.notna(ts):
-                    last_updated_badge = ts.strftime('%H:%M')
-                else:
-                    m = re.search(r"(\d{1,2}:\d{2})", last_updated_raw)
-                    if m:
-                        last_updated_badge = m.group(1)
-            except Exception:
-                pass
+            last_updated_badge = _get_health_last_update_badge(df_h, now_kst)
 
             st.markdown(
                 f"""<h3 style="margin-bottom: 10px;">Real-time Bio-Stat <span class="time-badge">{last_updated_badge} 업데이트</span></h3>""",
