@@ -563,6 +563,8 @@ HEURISTIC_NUTRITION_PROFILE = {
     "김밥": {"kcal": 450, "carbs": 62.0, "protein": 13.0, "fat": 14.0},
     "비빔밥": {"kcal": 550, "carbs": 88.0, "protein": 19.0, "fat": 13.0},
     "샐러드": {"kcal": 350, "carbs": 24.0, "protein": 24.0, "fat": 16.0},
+    "보쌈": {"kcal": 460, "carbs": 6.0, "protein": 38.0, "fat": 30.0},
+    "돼지고기": {"kcal": 320, "carbs": 0.0, "protein": 27.0, "fat": 23.0},
     "쌀밥": {"kcal": 300, "carbs": 67.0, "protein": 5.7, "fat": 0.5},
     "밥": {"kcal": 300, "carbs": 67.0, "protein": 5.7, "fat": 0.5},
     "콜라": {"kcal": 108, "carbs": 27.0, "protein": 0.0, "fat": 0.0},  # 250ml
@@ -1177,6 +1179,83 @@ def _latest_health_values(df_health, defaults=None, columns=None):
             break
 
     return out
+
+
+def _resolve_dashboard_vitals(df_health, date_key=None):
+    """
+    대시보드/스프린트 공통 규칙:
+    1) date_key(오늘) 데이터가 있으면 오늘의 최신 유효값 사용
+    2) 없으면 전체에서 최근 유효값 사용
+    3) 유효값이 없으면 None
+    """
+    out = {
+        "weight": None,
+        "hrv": None,
+        "rhr": None,
+        "weight_date": "",
+        "hrv_date": "",
+        "rhr_date": "",
+    }
+
+    if df_health is None or df_health.empty or ("Date" not in df_health.columns):
+        return out
+
+    try:
+        df = df_health.copy()
+        df["Date_Key"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+        date_part = df["Date"].astype(str).str.strip()
+        if "Time" in df.columns:
+            time_part = df["Time"].astype(str).str.strip()
+            ts = pd.to_datetime(date_part + " " + time_part, errors="coerce")
+        else:
+            ts = pd.to_datetime(date_part, errors="coerce")
+
+        ts_date_only = pd.to_datetime(date_part, errors="coerce")
+        ts = ts.where(ts.notna(), ts_date_only)
+
+        if "Hour_Key" in df.columns:
+            hk = (
+                df["Hour_Key"]
+                .astype(str)
+                .str.extract(r"(\d{4}-\d{2}-\d{2})[_ ](\d{1,2})", expand=True)
+            )
+            hk_ts = pd.to_datetime(hk[0] + " " + hk[1] + ":00", errors="coerce")
+            ts = ts.where(ts.notna(), hk_ts)
+
+        df["_ts"] = ts
+        df["_weight_num"] = pd.to_numeric(df.get("Weight", np.nan), errors="coerce")
+        df["_hrv_num"] = pd.to_numeric(df.get("HRV", np.nan), errors="coerce")
+        df["_rhr_num"] = pd.to_numeric(df.get("RHR", np.nan), errors="coerce")
+
+        # 0 또는 음수는 결측으로 취급
+        df.loc[df["_weight_num"] <= 0, "_weight_num"] = np.nan
+        df.loc[df["_hrv_num"] <= 0, "_hrv_num"] = np.nan
+        df.loc[df["_rhr_num"] <= 0, "_rhr_num"] = np.nan
+
+        def _pick(num_col):
+            if date_key:
+                day = df[(df["Date_Key"] == str(date_key)) & (df[num_col].notna())].copy()
+                if not day.empty:
+                    day = day.sort_values("_ts")
+                    v = float(day.iloc[-1][num_col])
+                    dk = str(day.iloc[-1].get("Date_Key", "") or "")
+                    return v, dk
+
+            all_valid = df[df[num_col].notna()].copy()
+            if all_valid.empty:
+                return None, ""
+            all_valid = all_valid.sort_values("_ts")
+            v = float(all_valid.iloc[-1][num_col])
+            dk = str(all_valid.iloc[-1].get("Date_Key", "") or "")
+            return v, dk
+
+        out["weight"], out["weight_date"] = _pick("_weight_num")
+        out["hrv"], out["hrv_date"] = _pick("_hrv_num")
+        out["rhr"], out["rhr_date"] = _pick("_rhr_num")
+        return out
+    except Exception:
+        return out
 
 
 def _get_health_last_update_badge(df_health, default_dt=None):
@@ -4250,9 +4329,46 @@ def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=
 
     sleep_info = "No sleep data."
     if not df_h_30.empty:
-        last = df_h_30.iloc[-1]
-        actual_sleep_duration = last.get('Sleep_duration', 0)
-        sleep_info = f"Last Sleep: {actual_sleep_duration}h"
+        # Prefer finalized sleep columns from Health_Log daily row.
+        # Fall back to legacy Sleep_duration (hour) only if needed.
+        latest_sleep = None
+        for i in range(len(df_h_30) - 1, -1, -1):
+            r = df_h_30.iloc[i]
+            aslp_m = _safe_float_or_none(r.get("Slp_Aslp_m", None))
+            inbed_m = _safe_float_or_none(r.get("Slp_InBed_m", None))
+            eff_pct = _safe_float_or_none(r.get("Slp_Eff_pct", None))
+            legacy_h = _safe_float_or_none(r.get("Sleep_duration", None))
+
+            has_new = (aslp_m is not None and aslp_m > 0) or (inbed_m is not None and inbed_m > 0)
+            has_legacy = legacy_h is not None and legacy_h > 0
+            if has_new or has_legacy:
+                latest_sleep = {
+                    "row": r,
+                    "aslp_m": aslp_m,
+                    "inbed_m": inbed_m,
+                    "eff_pct": eff_pct,
+                    "legacy_h": legacy_h,
+                }
+                break
+
+        if latest_sleep:
+            dkey = str(latest_sleep["row"].get("Date", "") or "").strip()
+            aslp_m = latest_sleep["aslp_m"]
+            inbed_m = latest_sleep["inbed_m"]
+            eff_pct = latest_sleep["eff_pct"]
+            legacy_h = latest_sleep["legacy_h"]
+
+            if aslp_m is None and legacy_h is not None:
+                aslp_m = legacy_h * 60.0
+
+            aslp_h = (aslp_m / 60.0) if (aslp_m is not None and aslp_m > 0) else None
+            if aslp_h is not None:
+                if inbed_m is not None and inbed_m > 0 and eff_pct is not None and eff_pct > 0:
+                    sleep_info = f"Last Sleep({dkey}): {aslp_h:.1f}h (in-bed {inbed_m:.0f}m, eff {eff_pct:.0f}%)"
+                elif inbed_m is not None and inbed_m > 0:
+                    sleep_info = f"Last Sleep({dkey}): {aslp_h:.1f}h (in-bed {inbed_m:.0f}m)"
+                else:
+                    sleep_info = f"Last Sleep({dkey}): {aslp_h:.1f}h"
 
     patterns = analyze_patterns(df_h_30, df_action[df_action['Date'] >= cutoff])
     ptn_txt = "\n".join([p['message'] for p in patterns]) if patterns else "None"
@@ -5991,8 +6107,55 @@ def _safe_num_from_str(v, default=0.0):
 
 def _split_food_items(text):
     raw = str(text or "")
-    parts = re.split(r",|/|\\n|\\+| 및 | 그리고 ", raw)
-    return [p.strip() for p in parts if str(p or "").strip()]
+    if not raw.strip():
+        return []
+
+    # 쉼표/슬래시/플러스는 괄호 바깥에서만 분리한다.
+    top = []
+    buf = []
+    depth = 0
+    for ch in raw:
+        if ch in "([{":
+            depth += 1
+            buf.append(ch)
+            continue
+        if ch in ")]}":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+            continue
+        if depth == 0 and ch in {",", "/", "+"}:
+            part = "".join(buf).strip()
+            if part:
+                top.append(part)
+            buf = []
+            continue
+        buf.append(ch)
+
+    tail = "".join(buf).strip()
+    if tail:
+        top.append(tail)
+
+    parts = []
+    for seg in top:
+        sub = re.split(r"\n|\s+및\s+|\s+그리고\s+", seg)
+        for p in sub:
+            p = str(p or "").strip()
+            if p:
+                parts.append(p)
+    return parts
+
+
+def _is_negated_food_mention(item_text, keyword):
+    t = str(item_text or "")
+    if (not keyword) or (keyword not in t):
+        return False
+    for m in re.finditer(re.escape(keyword), t):
+        s = max(0, m.start() - 10)
+        e = min(len(t), m.end() + 10)
+        ctx = t[s:e]
+        if re.search(r"(없이|제외|빼고|없음|미포함|안\s*먹|x)", ctx, flags=re.IGNORECASE):
+            return True
+    return False
 
 
 def _extract_portion_multiplier(item_text):
@@ -6033,6 +6196,8 @@ def estimate_nutrition_heuristic(user_text):
         chosen = None
         for k in keys:
             if k in item:
+                if _is_negated_food_mention(item, k):
+                    continue
                 chosen = k
                 break
         if not chosen:
@@ -6181,6 +6346,38 @@ def parse_log_quick(category, user_text, log_time):
         m = re.search(pattern, txt, flags=re.IGNORECASE)
         return float(m.group(1)) if m else default
 
+    def _sum_float(pattern):
+        vals = re.findall(pattern, txt, flags=re.IGNORECASE)
+        if not vals:
+            return 0.0
+        s = 0.0
+        for v in vals:
+            try:
+                if isinstance(v, tuple):
+                    v = v[0]
+                s += float(v)
+            except Exception:
+                continue
+        return s
+
+    def _extract_ml_for_keyword(keyword):
+        # e.g. "맥주 500미리", "500ml 맥주", "소주 200ml"
+        patterns = [
+            rf"{keyword}[^0-9]{{0,10}}(\d+(?:\.\d+)?)\s*(?:ml|밀리|미리|cc)",
+            rf"(\d+(?:\.\d+)?)\s*(?:ml|밀리|미리|cc)[^가-힣]{{0,4}}{keyword}",
+        ]
+        total = 0.0
+        for p in patterns:
+            total += _sum_float(p)
+        return total
+
+    def _extract_total_minutes():
+        # Aggregate all durations in one sentence: "1시간 코어 20분" => 80
+        mins = 0.0
+        mins += _sum_float(r"(\d+(?:\.\d+)?)\s*(?:시간|hr|hour|hours|h)") * 60.0
+        mins += _sum_float(r"(\d+(?:\.\d+)?)\s*(?:분|min|minute|minutes|m)")
+        return int(round(mins))
+
     if "섭취" in category:
         # 기본값은 fast 모드(휴리스틱만)로 저장 지연을 최소화한다.
         # 필요 시 secrets의 NUTRITION_PARSE_MODE=balanced/openai 로 전환 가능.
@@ -6248,7 +6445,7 @@ def parse_log_quick(category, user_text, log_time):
         }
 
     if "운동" in category:
-        mins = _first_int(r"(\d{1,3})\s*(분|min|minute)", 0)
+        mins = _extract_total_minutes()
         if mins <= 0:
             km = _first_float(r"(\d{1,2}(?:\.\d+)?)\s*km", 0.0)
             if km > 0:
@@ -6263,14 +6460,50 @@ def parse_log_quick(category, user_text, log_time):
         }
 
     if "음주" in category:
-        soju = _first_int(r"소주\s*(\d+)\s*병", 0)
-        beer_can = _first_int(r"맥주\s*(\d+)\s*(캔|병)", 0)
-        beer_glass = _first_int(r"맥주\s*(\d+)\s*잔", 0)
-        wine = _first_int(r"와인\s*(\d+)\s*병", 0)
-        drinks = soju * 7 + int(beer_can * 1.5) + beer_glass + wine * 5
-        calories = int(drinks * 100)
+        # count-based
+        soju_bottle = _sum_float(r"소주\s*(\d+(?:\.\d+)?)\s*병")
+        soju_glass = _sum_float(r"소주\s*(\d+(?:\.\d+)?)\s*잔")
+        beer_can = _sum_float(r"맥주\s*(\d+(?:\.\d+)?)\s*(?:캔|병)")
+        beer_glass = _sum_float(r"맥주\s*(\d+(?:\.\d+)?)\s*잔")
+        wine_bottle = _sum_float(r"와인\s*(\d+(?:\.\d+)?)\s*병")
+        wine_glass = _sum_float(r"와인\s*(\d+(?:\.\d+)?)\s*잔")
+
+        # volume-based fallback/addition
+        soju_ml = _extract_ml_for_keyword("소주")
+        beer_ml = _extract_ml_for_keyword("맥주")
+        wine_ml = _extract_ml_for_keyword("와인")
+
+        # 기준:
+        # 소주 1병(360ml)=7잔 -> 1잔≈51.4ml
+        # 맥주 1캔(355ml)=1.5잔 -> 1잔≈236.7ml
+        # 와인 1병(750ml)=5잔 -> 1잔=150ml
+        drinks_f = 0.0
+        drinks_f += soju_bottle * 7.0 + soju_glass
+        drinks_f += beer_can * 1.5 + beer_glass
+        drinks_f += wine_bottle * 5.0 + wine_glass
+        drinks_f += (soju_ml / 51.4) + (beer_ml / 236.7) + (wine_ml / 150.0)
+
+        drinks_f = max(0.0, drinks_f)
+        drinks = int(round(drinks_f))
+        if drinks == 0 and drinks_f > 0:
+            drinks = 1
+        calories = int(round(drinks_f * 100))
+
+        alcohol_type = "기타"
+        bucket_soju = soju_bottle * 360 + soju_glass * 50 + soju_ml
+        bucket_beer = beer_can * 355 + beer_glass * 300 + beer_ml
+        bucket_wine = wine_bottle * 750 + wine_glass * 150 + wine_ml
+        mx = max(bucket_soju, bucket_beer, bucket_wine)
+        if mx > 0:
+            if mx == bucket_soju:
+                alcohol_type = "소주"
+            elif mx == bucket_beer:
+                alcohol_type = "맥주"
+            else:
+                alcohol_type = "와인"
+
         return {
-            "alcohol_type": "기타",
+            "alcohol_type": alcohol_type,
             "standard_drinks": int(drinks),
             "calories": int(calories),
             "summary": f"음주 기록 ({int(drinks)}잔, 약 {int(calories)}kcal)",
@@ -6287,7 +6520,7 @@ def parse_log_quick(category, user_text, log_time):
         }
 
     if "회복" in category:
-        mins = _first_int(r"(\d{1,3})\s*(분|min|minute)", 0)
+        mins = _extract_total_minutes()
         cycles = _first_int(r"(\d{1,2})\s*(세트|사이클)", 0)
         if mins <= 0 and cycles > 0:
             mins = cycles * 20
@@ -6331,8 +6564,18 @@ def handle_log_form_submit():
         except Exception:
             date_obj = now_kst.date()
 
-        hour = int(st.session_state.get("log_hour_widget", now_kst.hour) or 0)
-        minute = int(st.session_state.get("log_minute_widget", (now_kst.minute // 5) * 5) or 0)
+        # UI uses slider keys (log_hour_slider_widget / log_minute_slider_widget).
+        # Keep backward compatibility with legacy keys.
+        raw_hour = st.session_state.get(
+            "log_hour_slider_widget",
+            st.session_state.get("log_hour_widget", now_kst.hour),
+        )
+        raw_minute = st.session_state.get(
+            "log_minute_slider_widget",
+            st.session_state.get("log_minute_widget", (now_kst.minute // 5) * 5),
+        )
+        hour = int(raw_hour or 0)
+        minute = int(raw_minute or 0)
         hour = max(0, min(23, hour))
         minute = max(0, min(59, minute))
         category = str(st.session_state.get("log_category_widget", "") or "").strip()
