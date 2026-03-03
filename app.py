@@ -2842,11 +2842,13 @@ def build_available_slots(date_key, cal_evts):
     evening_start = datetime.combine(dt.date(), time(19,0), tzinfo=KST)
     evening_end = datetime.combine(dt.date(), time(23,59), tzinfo=KST)
 
-    termin_raw = cal_evts.get("Termin", []) or []
-    termin_events = [e for e in termin_raw if not _is_canceled_event_title(e.get("title", ""))]
+    all_events = []
+    for _, ev_list in (cal_evts or {}).items():
+        all_events.extend(ev_list or [])
+    valid_events = [e for e in all_events if not _is_canceled_event_title(e.get("title", ""))]
 
     def has_termin_overlap(win_start, win_end):
-        for e in termin_events:
+        for e in valid_events:
             es = e['start_dt']
             ee = e['end_dt']
             if _overlaps(es, ee, win_start, win_end):
@@ -2856,7 +2858,7 @@ def build_available_slots(date_key, cal_evts):
     # tag-based forced blocking
     lunch_tagged = False
     dinner_tagged = False
-    for e in termin_events:
+    for e in valid_events:
         title = str(e.get("title", "") or "")
         t = re.sub(r"\s+", "", title)
         if ("점심" in t) or ("점:" in t) or t.startswith("점"):
@@ -2883,7 +2885,7 @@ def build_available_slots(date_key, cal_evts):
         "active_now": bool(lunch_enabled and lunch_active_now),
         "notes": "캘린더와 현재 시각 기준으로 점심 실행 가능 여부만 제공합니다.",
         "reason_disabled":
-            ("점심 태그/점심시간 일정(Termin)으로 막힘" if lunch_blocked else
+            ("점심 태그/점심시간 일정과 겹쳐서 막힘" if lunch_blocked else
              "해당 날짜는 이미 종료되어 신규 제안을 차단" if is_past_date else
              "11시 이후라 점심시간 계획은 폐기" if lunch_too_late else
              "")
@@ -2898,7 +2900,7 @@ def build_available_slots(date_key, cal_evts):
         "active_now": bool(evening_enabled and evening_active_now),
         "notes": "캘린더와 현재 시각 기준으로 저녁 실행 가능 여부만 제공합니다.",
         "reason_disabled":
-            ("저녁 태그 또는 19:00~23:59 일정(Termin)과 겹쳐서 저녁 실행 불가" if evening_blocked else
+            ("저녁 태그 또는 19:00~23:59 일정과 겹쳐서 저녁 실행 불가" if evening_blocked else
              "해당 날짜는 이미 종료되어 신규 제안을 차단" if is_past_date else
              "21:00 이후에는 하루 마무리 모드로 전환되어 신규 운동 제안을 차단" if day_wrapup_mode else
              "")
@@ -3566,7 +3568,11 @@ def extract_calendar_flags(date_key, cal_evts):
     lunch_tag = False
     dinner_tag = False
 
-    for e in (cal_evts.get("Termin", []) or []):
+    all_events = []
+    for _, ev_list in (cal_evts or {}).items():
+        all_events.extend(ev_list or [])
+
+    for e in all_events:
         title = str(e.get("title", "") or "")
         if _is_canceled_event_title(title):
             continue
@@ -3588,6 +3594,45 @@ def extract_calendar_flags(date_key, cal_evts):
         "lunch_appointment": bool(lunch_overlap or lunch_tag),
         "dinner_appointment": bool(dinner_overlap or dinner_tag),
     }
+
+
+def _calendar_fact_sentence(daily_state):
+    cf = (daily_state or {}).get("calendar_flags", {}) or {}
+    lunch_appt = bool(cf.get("lunch_appointment", False))
+    dinner_appt = bool(cf.get("dinner_appointment", False))
+    if lunch_appt and dinner_appt:
+        return "오늘은 점심/저녁 일정이 모두 있어 식사 시간대 자유 슬롯이 제한됩니다."
+    if lunch_appt:
+        return "오늘은 점심 일정이 있어 점심 시간대 자유 슬롯이 제한됩니다."
+    if dinner_appt:
+        return "오늘은 저녁 일정이 있어 저녁 시간대 자유 슬롯이 제한됩니다."
+    return ""
+
+
+def _apply_calendar_fact_guard(text, daily_state):
+    s = str(text or "").strip()
+    if not s:
+        return s
+
+    fact = _calendar_fact_sentence(daily_state)
+    if not fact:
+        return s
+
+    # AI가 가끔 사실과 다르게 "약속 없음"을 말하는 케이스를 문장 단위로 제거
+    parts = [p.strip() for p in re.split(r'(?<=[\.\!\?])\s+|\n+', s) if p.strip()]
+    kept = []
+    for ln in parts:
+        has_schedule_word = ("약속" in ln) or ("일정" in ln)
+        has_no_schedule_word = bool(re.search(r"(없|안\s*잡|잡혀\s*있지)", ln))
+        if has_schedule_word and has_no_schedule_word:
+            continue
+        kept.append(ln)
+    s = " ".join(kept).strip()
+    s = re.sub(r"\s{2,}", " ", s).strip()
+
+    if (("점심 일정" not in s) and ("저녁 일정" not in s) and ("점심/저녁 일정" not in s)):
+        s = f"{fact} {s}".strip()
+    return s
 
 
 def compute_xc(daily_target, daily_state):
@@ -4017,6 +4062,9 @@ def validate_action_plan_output(result, daily_state):
             continue
         safe_lines.append(line)
     text = "\n".join(safe_lines).strip()
+
+    analysis = _apply_calendar_fact_guard(analysis, daily_state)
+    text = _apply_calendar_fact_guard(text, daily_state)
 
     result["current_analysis"] = polish_korean_coaching_text(humanize_action_text(analysis))
     result["next_actions"] = polish_korean_coaching_text(humanize_action_text(text))
