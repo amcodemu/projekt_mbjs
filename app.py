@@ -3141,8 +3141,8 @@ def _pitwall_classify_cardio_kind(row, minutes):
         return "zone2"
     if has_strength:
         return ""
-    if int(minutes or 0) >= 20:
-        return "zone2"
+    # Do not auto-promote generic "운동 N분" into zone2.
+    # zone2 is counted only when explicit zone2/cardio keywords exist.
     return ""
 
 
