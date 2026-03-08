@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
 import os
+import time as pytime
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 import re
@@ -1040,10 +1041,32 @@ def get_db_connection(worksheet_name):
 def fetch_sheet_data(worksheet_name):
     try:
         sheet = get_db_connection(worksheet_name)
-        return sheet.get_all_records()
+        return _sheet_get_all_records_with_retry(sheet, worksheet_name=worksheet_name)
     except Exception as e:
         print(f"⚠️ API Error ({worksheet_name}): {e}")
         return []
+
+
+def _is_read_quota_error(err):
+    s = str(err or "")
+    low = s.lower()
+    return ("429" in low) and ("read requests" in low or "quota exceeded" in low)
+
+
+def _sheet_get_all_records_with_retry(sheet, worksheet_name="", max_attempts=4):
+    delay = 0.7
+    last_err = None
+    for attempt in range(1, int(max_attempts) + 1):
+        try:
+            return sheet.get_all_records()
+        except Exception as e:
+            last_err = e
+            if (not _is_read_quota_error(e)) or attempt >= int(max_attempts):
+                break
+            print(f"⚠️ Sheets read quota retry ({worksheet_name}) attempt={attempt}/{max_attempts}")
+            pytime.sleep(delay)
+            delay = min(delay * 2.0, 4.0)
+    raise last_err
 
 def parse_korean_datetime(dt_str):
     try:
@@ -4127,7 +4150,7 @@ def ai_generate_daily_five(date_key, sprint, current_status, context):
     yesterday_review = context.get("yesterday_workout_review")
     if not yesterday_review:
         try:
-            df_action = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
+            df_action = pd.DataFrame(fetch_sheet_data("Action_Log"))
             yesterday_review = summarize_yesterday_workout_review(df_action, date_key)
         except:
             yesterday_review = {
@@ -4510,10 +4533,8 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
     now_kst = get_current_kst()
 
     try:
-        sheet_health = get_db_connection("Health_Log")
-        sheet_action = get_db_connection("Action_Log")
-        df_health = pd.DataFrame(sheet_health.get_all_records())
-        df_action = pd.DataFrame(sheet_action.get_all_records())
+        df_health = pd.DataFrame(fetch_sheet_data("Health_Log"))
+        df_action = pd.DataFrame(fetch_sheet_data("Action_Log"))
     except:
         df_health = pd.DataFrame()
         df_action = pd.DataFrame()
@@ -6639,6 +6660,10 @@ def handle_log_form_submit():
             json.dumps(parsed, ensure_ascii=False),
             ""
         ])
+        try:
+            fetch_sheet_data.clear()
+        except Exception:
+            pass
 
         # DF 저장 직후에는 Sprint_Daily_Tasks Completed 동기화를 즉시 수행
         try:
@@ -6696,7 +6721,7 @@ if _dashboard_subpage == "makjang":
 
     try:
         date_key_mj = get_mission_date_key()
-        df_action_mj = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
+        df_action_mj = pd.DataFrame(fetch_sheet_data("Action_Log"))
         mj_detail = compute_makjang_3day_score(date_key_mj, df_action_mj)
         st.metric("일상 막장 지수", f"{int(mj_detail.get('score', 0))}/100")
         render_makjang_score_drilldown(mj_detail)
@@ -6709,10 +6734,8 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["DASHBOARD", "SPRINT", "LOG", "PIT WALL"
 # [TAB 1] Dashboard
 with tab1:
     try:
-        sh_h = get_db_connection("Health_Log")
-        sh_a = get_db_connection("Action_Log")
-        df_h = pd.DataFrame(sh_h.get_all_records())
-        df_a = pd.DataFrame(sh_a.get_all_records())
+        df_h = pd.DataFrame(fetch_sheet_data("Health_Log"))
+        df_a = pd.DataFrame(fetch_sheet_data("Action_Log"))
 
         if not df_h.empty:
             now_kst = get_current_kst()
@@ -6990,8 +7013,7 @@ with tab2:
         try:
             @st.cache_data(ttl=300)
             def get_current_health_data():
-                sh_h = get_db_connection("Health_Log")
-                df_h = pd.DataFrame(sh_h.get_all_records())
+                df_h = pd.DataFrame(fetch_sheet_data("Health_Log"))
                 if df_h.empty:
                     return None
                 latest = _latest_health_values(df_h)
@@ -7019,14 +7041,13 @@ with tab2:
 
                     date_key = get_mission_date_key()
 
-                    sh_h = get_db_connection("Health_Log")
-                    df_h = pd.DataFrame(sh_h.get_all_records())
+                    df_h = pd.DataFrame(fetch_sheet_data("Health_Log"))
                     
                     cal_events = get_today_calendar_events(date_key)
                     available_slots = build_available_slots(date_key, cal_events)
 
                     progress = calculate_sprint_progress(sprint, current_weight)
-                    df_action_tab2 = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
+                    df_action_tab2 = pd.DataFrame(fetch_sheet_data("Action_Log"))
                     daily_state = build_daily_state(
                         date_key=date_key,
                         now_kst=get_current_kst(),
@@ -7296,8 +7317,7 @@ with tab3:
         cal = 0
         mins = 0
         try:
-            sh_a = get_db_connection("Action_Log")
-            df_a = pd.DataFrame(sh_a.get_all_records())
+            df_a = pd.DataFrame(fetch_sheet_data("Action_Log"))
 
             if not df_a.empty:
                 df_a["Date_Clean"] = pd.to_datetime(df_a["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
@@ -7402,8 +7422,7 @@ with tab3:
 
         @st.cache_data(ttl=300)
         def load_archive_data():
-            sh_a = get_db_connection("Action_Log")
-            return pd.DataFrame(sh_a.get_all_records())
+            return pd.DataFrame(fetch_sheet_data("Action_Log"))
 
         try:
             df = load_archive_data()
@@ -7483,13 +7502,13 @@ with tab4:
             try:
                 date_key_dbg = get_mission_date_key()
                 now_kst_dbg = get_current_kst()
-                df_action_dbg = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
+                df_action_dbg = pd.DataFrame(fetch_sheet_data("Action_Log"))
                 cal_dbg = get_today_calendar_events(date_key_dbg)
                 slots_dbg = build_available_slots(date_key_dbg, cal_dbg)
                 sprint_dbg = get_active_sprint()
                 progress_dbg = None
                 if sprint_dbg:
-                    df_health_dbg = pd.DataFrame(get_db_connection("Health_Log").get_all_records())
+                    df_health_dbg = pd.DataFrame(fetch_sheet_data("Health_Log"))
                     current_w_dbg = (_latest_health_values(df_health_dbg)["Weight"] if not df_health_dbg.empty else 0.0)
                     progress_dbg = calculate_sprint_progress(sprint_dbg, current_w_dbg)
 
