@@ -703,6 +703,14 @@ def polish_korean_coaching_text(text: str) -> str:
     return out
 
 
+def format_xc_caption_text(xc_value) -> str:
+    try:
+        val = abs(float(xc_value))
+        return f"xC 참고값(오늘 목표 변화량): {val:.2f}kg"
+    except Exception:
+        return "xC 참고값 없음"
+
+
 def build_dailyfive_status_text(date_key, sprint_id, df_action):
     daily_five = load_dailyfive_cache(date_key, sprint_id)
     if not daily_five or 'tasks' not in daily_five:
@@ -2825,6 +2833,7 @@ def get_today_calendar_events(date_key=None):
                     'start_dt': start_dt,
                     'end_dt': end_dt,
                     'is_all_day': is_all_day,
+                    'calendar_name': name,
                 })
 
         return evts
@@ -2849,6 +2858,28 @@ def _is_canceled_event_title(title):
     return any(tok in t for tok in cancel_tokens)
 
 
+def _is_workout_event_title(title):
+    t = re.sub(r"\s+", "", str(title or "").lower())
+    if not t:
+        return False
+    workout_tokens = [
+        "운동", "헬스", "짐", "pt", "피티", "요가", "필라테스", "크로스핏",
+        "런", "러닝", "조깅", "걷기", "산책", "사이클", "자전거", "수영",
+        "테니스", "배드민턴", "농구", "축구", "클라이밍", "사우나", "gfc",
+    ]
+    return any(tok in t for tok in workout_tokens)
+
+
+def _is_workout_event(ev):
+    if not isinstance(ev, dict):
+        return False
+    title = str(ev.get("title", "") or "")
+    cal_name = str(ev.get("calendar_name", "") or "").strip().lower()
+    if cal_name == "sports":
+        return True
+    return _is_workout_event_title(title)
+
+
 def build_available_slots(date_key, cal_evts):
     """
     ✅ [FIX] Hard Gate: AI에 캘린더 원문을 주지 않고,
@@ -2870,8 +2901,20 @@ def build_available_slots(date_key, cal_evts):
         all_events.extend(ev_list or [])
     valid_events = [e for e in all_events if not _is_canceled_event_title(e.get("title", ""))]
 
-    def has_termin_overlap(win_start, win_end):
+    def has_blocking_overlap(win_start, win_end):
         for e in valid_events:
+            if _is_workout_event(e):
+                continue
+            es = e['start_dt']
+            ee = e['end_dt']
+            if _overlaps(es, ee, win_start, win_end):
+                return True
+        return False
+
+    def has_workout_overlap(win_start, win_end):
+        for e in valid_events:
+            if not _is_workout_event(e):
+                continue
             es = e['start_dt']
             ee = e['end_dt']
             if _overlaps(es, ee, win_start, win_end):
@@ -2884,15 +2927,20 @@ def build_available_slots(date_key, cal_evts):
     for e in valid_events:
         title = str(e.get("title", "") or "")
         t = re.sub(r"\s+", "", title)
+        is_workout = _is_workout_event(e)
         if ("점심" in t) or ("점:" in t) or t.startswith("점"):
-            lunch_tagged = True
+            if not is_workout:
+                lunch_tagged = True
         if ("저녁" in t) or ("저:" in t) or t.startswith("저"):
-            dinner_tagged = True
+            if not is_workout:
+                dinner_tagged = True
 
     is_past_date = now_kst.date() > dt.date()
-    lunch_blocked = has_termin_overlap(lunch_start, lunch_end) or lunch_tagged
+    lunch_blocked = has_blocking_overlap(lunch_start, lunch_end) or lunch_tagged
+    lunch_workout_scheduled = has_workout_overlap(lunch_start, lunch_end)
     lunch_too_late = is_past_date or ((now_kst.date() == dt.date()) and (now_kst.time() >= lunch_plan_cutoff))
-    evening_blocked = has_termin_overlap(evening_start, evening_end) or dinner_tagged
+    evening_blocked = has_blocking_overlap(evening_start, evening_end) or dinner_tagged
+    evening_workout_scheduled = has_workout_overlap(evening_start, evening_end)
     day_wrapup_mode = is_past_date or ((now_kst.date() == dt.date()) and (now_kst.time() >= day_wrapup_cutoff))
     lunch_active_now = (now_kst.date() == dt.date()) and (lunch_start <= now_kst <= lunch_end)
     evening_active_now = (now_kst.date() == dt.date()) and (evening_start <= now_kst <= evening_end)
@@ -2901,11 +2949,12 @@ def build_available_slots(date_key, cal_evts):
     lunch_enabled = (not lunch_blocked) and (not lunch_too_late)
     slots.append({
         "slot_id": "lunch_window",
-        "label": "점심 가능 시간",
+        "label": "점심 운동 실행 시간" if lunch_workout_scheduled else "점심 가능 시간",
         "start": lunch_start.strftime("%H:%M"),
         "end": lunch_end.strftime("%H:%M"),
         "enabled": lunch_enabled,
         "active_now": bool(lunch_enabled and lunch_active_now),
+        "scheduled_workout": bool(lunch_workout_scheduled),
         "notes": "캘린더와 현재 시각 기준으로 점심 실행 가능 여부만 제공합니다.",
         "reason_disabled":
             ("점심 태그/점심시간 일정과 겹쳐서 막힘" if lunch_blocked else
@@ -2916,11 +2965,12 @@ def build_available_slots(date_key, cal_evts):
     evening_enabled = (not evening_blocked) and (not day_wrapup_mode)
     slots.append({
         "slot_id": "evening_window",
-        "label": "저녁 가능 시간",
+        "label": "저녁 운동 실행 시간" if evening_workout_scheduled else "저녁 가능 시간",
         "start": "19:00",
         "end": "23:59",
         "enabled": evening_enabled,
         "active_now": bool(evening_enabled and evening_active_now),
+        "scheduled_workout": bool(evening_workout_scheduled),
         "notes": "캘린더와 현재 시각 기준으로 저녁 실행 가능 여부만 제공합니다.",
         "reason_disabled":
             ("저녁 태그 또는 19:00~23:59 일정과 겹쳐서 저녁 실행 불가" if evening_blocked else
@@ -3590,6 +3640,8 @@ def extract_calendar_flags(date_key, cal_evts):
     dinner_overlap = False
     lunch_tag = False
     dinner_tag = False
+    lunch_workout = False
+    dinner_workout = False
 
     all_events = []
     for _, ev_list in (cal_evts or {}).items():
@@ -3600,22 +3652,35 @@ def extract_calendar_flags(date_key, cal_evts):
         if _is_canceled_event_title(title):
             continue
         title_compact = re.sub(r"\s+", "", title.lower())
+        is_workout = _is_workout_event(e)
         es = e.get("start_dt")
         ee = e.get("end_dt")
         if es is not None and ee is not None:
             if _overlaps(es, ee, lunch_start, lunch_end):
+                if is_workout:
+                    lunch_workout = True
                 lunch_overlap = True
             if _overlaps(es, ee, dinner_start, dinner_end):
+                if is_workout:
+                    dinner_workout = True
                 dinner_overlap = True
 
         if ("점심" in title_compact) or ("점:" in title_compact) or title_compact.startswith("점"):
-            lunch_tag = True
+            if is_workout:
+                lunch_workout = True
+            else:
+                lunch_tag = True
         if ("저녁" in title_compact) or ("저:" in title_compact) or title_compact.startswith("저"):
-            dinner_tag = True
+            if is_workout:
+                dinner_workout = True
+            else:
+                dinner_tag = True
 
     return {
-        "lunch_appointment": bool(lunch_overlap or lunch_tag),
-        "dinner_appointment": bool(dinner_overlap or dinner_tag),
+        "lunch_appointment": bool((lunch_overlap or lunch_tag) and (not lunch_workout)),
+        "dinner_appointment": bool((dinner_overlap or dinner_tag) and (not dinner_workout)),
+        "lunch_workout_scheduled": bool(lunch_workout),
+        "dinner_workout_scheduled": bool(dinner_workout),
     }
 
 
@@ -3623,12 +3688,24 @@ def _calendar_fact_sentence(daily_state):
     cf = (daily_state or {}).get("calendar_flags", {}) or {}
     lunch_appt = bool(cf.get("lunch_appointment", False))
     dinner_appt = bool(cf.get("dinner_appointment", False))
+    lunch_workout = bool(cf.get("lunch_workout_scheduled", False))
+    dinner_workout = bool(cf.get("dinner_workout_scheduled", False))
     if lunch_appt and dinner_appt:
-        return "오늘은 점심/저녁 일정이 모두 있어 식사 시간대 자유 슬롯이 제한됩니다."
+        return "오늘은 점심·저녁에 약속이 있어 실행 가능한 시간이 짧습니다."
+    if lunch_appt and dinner_workout:
+        return "점심 약속은 있지만 저녁 운동 일정이 잡혀 있어, 저녁 세션 실행에 집중하면 됩니다."
+    if dinner_appt and lunch_workout:
+        return "저녁 약속은 있지만 점심 운동 일정이 잡혀 있어, 점심 세션 실행에 집중하면 됩니다."
+    if lunch_workout and dinner_workout:
+        return "점심·저녁에 운동 일정이 이미 잡혀 있어, 각 세션을 기준으로 식사·회복만 정렬하면 됩니다."
+    if lunch_workout:
+        return "오늘 점심에 운동 일정이 이미 잡혀 있어, 해당 세션 실행 중심으로 운영하면 됩니다."
+    if dinner_workout:
+        return "오늘 저녁에 운동 일정이 이미 잡혀 있어, 해당 세션 실행 중심으로 운영하면 됩니다."
     if lunch_appt:
-        return "오늘은 점심 일정이 있어 점심 시간대 자유 슬롯이 제한됩니다."
+        return "오늘은 점심 일정이 있어 점심 시간 선택 폭이 좁습니다."
     if dinner_appt:
-        return "오늘은 저녁 일정이 있어 저녁 시간대 자유 슬롯이 제한됩니다."
+        return "오늘은 저녁 약속이 있어 별도 운동 시간 확보가 어렵습니다."
     return ""
 
 
@@ -3653,7 +3730,8 @@ def _apply_calendar_fact_guard(text, daily_state):
     s = " ".join(kept).strip()
     s = re.sub(r"\s{2,}", " ", s).strip()
 
-    if (("점심 일정" not in s) and ("저녁 일정" not in s) and ("점심/저녁 일정" not in s)):
+    has_calendar_hint = bool(re.search(r"(점심|저녁).*(일정|약속)", s))
+    if not has_calendar_hint:
         s = f"{fact} {s}".strip()
     return s
 
@@ -3947,6 +4025,9 @@ def build_daily_state(
         "yesterday_workout_review": yesterday_workout_review,
         "recent_backlog": recent_backlog,
         "sprint": {
+            "day": (int(sprint_progress.get("day")) if sprint_progress and sprint_progress.get("day") is not None else None),
+            "days_remaining": (int(sprint_progress.get("days_remaining")) if sprint_progress and sprint_progress.get("days_remaining") is not None else None),
+            "progress_pct": (float(sprint_progress.get("progress_pct")) if sprint_progress and sprint_progress.get("progress_pct") is not None else None),
             "pace_status": (sprint_progress.get("pace_status") if sprint_progress else None),
             "weight_delta": (float(sprint_progress.get("weight_delta")) if sprint_progress and sprint_progress.get("weight_delta") is not None else None),
             "required_daily_pace": (float(sprint_progress.get("required_daily_pace")) if sprint_progress and sprint_progress.get("required_daily_pace") is not None else None),
@@ -3999,6 +4080,27 @@ def _sanitize_plan_lines(text):
     return "\n".join(cleaned).strip()
 
 
+def _dedupe_consecutive_sentences(text):
+    if not text:
+        return ""
+    parts = re.split(r"(?<=[\.\!\?])\s+", str(text).strip())
+    if len(parts) <= 1:
+        return str(text).strip()
+
+    out = []
+    prev_key = None
+    for p in parts:
+        s = str(p or "").strip()
+        if not s:
+            continue
+        key = re.sub(r"\s+", " ", s).strip().lower()
+        if key == prev_key:
+            continue
+        out.append(s)
+        prev_key = key
+    return " ".join(out).strip()
+
+
 def _enforce_evidence_quality(text, daily_state):
     if not text:
         return False
@@ -4026,10 +4128,439 @@ def _is_action_oriented_text(text):
         return False
     low = str(text).lower()
     action_markers = [
-        "실행", "고정", "차단", "기록", "준비", "시작", "마무리",
+        "실행", "고정", "차단", "기록", "시작", "마무리",
         "하십시오", "하세요", "하십시", "must", "do now",
     ]
     return any(m in low for m in action_markers)
+
+
+def _rewrite_vague_korean(text):
+    if not text:
+        return ""
+    out = str(text)
+    replacements = [
+        ("자유 슬롯", "여유 시간"),
+        ("점심 시간대 여유 시간이 제한됩니다", "점심은 다른 일정이 있어 시간이 짧습니다"),
+        ("저녁 시간대 여유 시간이 제한됩니다", "저녁은 다른 일정이 있어 시간이 짧습니다"),
+        ("점심 시간대 자유 슬롯이 제한됩니다", "점심은 다른 일정이 있어 시간이 짧습니다"),
+        ("저녁 시간대 자유 슬롯이 제한됩니다", "저녁은 다른 일정이 있어 시간이 짧습니다"),
+        ("점심 시간대 운동 가능한 시간이 제한됩니다", "점심은 다른 일정이 있어 시간이 짧습니다"),
+        ("저녁 시간대 운동 가능한 시간이 제한됩니다", "저녁은 다른 일정이 있어 시간이 짧습니다"),
+        ("점심 시간 전에 좀 더 준비하시고", "점심 전에 메뉴를 먼저 정하고"),
+        ("가능한 건강한 메뉴로 식사를 진행하세요", "점심은 단백질+채소로 고르고 밥/면/튀김은 빼세요"),
+        ("식사/수분/준비를 정리하고", "물 200ml만 마시고"),
+        ("스프린트에 뒤쳐져 있으니", "목표 대비 지연 상태이므로"),
+    ]
+    for src, dst in replacements:
+        out = out.replace(src, dst)
+
+    # 모호한 '준비' 문구를 실행형으로 치환
+    out = re.sub(r"준비를 완료하고", "실행 항목을 확정하고", out)
+    out = re.sub(r"준비하세요", "바로 정하세요", out)
+    out = re.sub(r"\s{2,}", " ", out).strip()
+    return out
+
+
+def _prepend_urgency_header(analysis, daily_state):
+    txt = str(analysis or "").strip()
+    urg = (daily_state or {}).get("urgency", {}) or {}
+    level = str(urg.get("level", "") or "").strip().lower()
+    sprint = (daily_state or {}).get("sprint", {}) or {}
+    delta = sprint.get("weight_delta")
+    req = sprint.get("required_daily_pace")
+
+    try:
+        delta_f = float(delta) if delta is not None else None
+    except Exception:
+        delta_f = None
+    try:
+        req_f = float(req) if req is not None else None
+    except Exception:
+        req_f = None
+
+    if level == "high":
+        if (delta_f is not None) and (delta_f > 0) and (req_f is not None):
+            head = (
+                f"현재 위기 구간입니다: 목표 대비 {delta_f:.2f}kg 뒤처져 있고, "
+                f"필요 페이스는 하루 {req_f:.2f}kg 수준입니다."
+            )
+        elif (delta_f is not None) and (delta_f > 0):
+            head = f"현재 위기 구간입니다: 목표 대비 {delta_f:.2f}kg 뒤처져 있습니다."
+        else:
+            head = "현재 위기 구간입니다: 오늘 페이스가 밀리면 복구 난도가 크게 올라갈 수 있습니다."
+    elif level == "medium":
+        if req_f is not None:
+            head = f"현재 주의 구간입니다: 목표 페이스를 맞추려면 하루 {req_f:.2f}kg 수준의 관리가 필요합니다."
+        else:
+            head = "현재 주의 구간입니다: 오늘 선택에 따라 주간 흐름이 갈릴 수 있습니다."
+    else:
+        return txt
+
+    if txt.startswith(head):
+        return txt
+    return f"{head} {txt}".strip()
+
+
+def _prepend_sprint_context_header(analysis, daily_state):
+    txt = str(analysis or "").strip()
+    if not txt:
+        return txt
+
+    sprint = (daily_state or {}).get("sprint", {}) or {}
+    pace = str(sprint.get("pace_status", "") or "").strip().lower()
+    day = sprint.get("day")
+    days_left = sprint.get("days_remaining")
+    delta = sprint.get("weight_delta")
+    req = sprint.get("required_daily_pace")
+
+    try:
+        day_i = int(day) if day is not None else None
+    except Exception:
+        day_i = None
+    try:
+        left_i = int(days_left) if days_left is not None else None
+    except Exception:
+        left_i = None
+    try:
+        delta_f = float(delta) if delta is not None else None
+    except Exception:
+        delta_f = None
+    try:
+        req_f = float(req) if req is not None else None
+    except Exception:
+        req_f = None
+
+    if pace == "behind":
+        if (left_i is not None) and (delta_f is not None) and (req_f is not None):
+            head = (
+                f"스프린트 현황: 현재 Day {day_i if day_i is not None else '?'} 구간이고, 남은 {left_i}일 동안 "
+                f"{delta_f:.2f}kg 격차를 메우려면 하루 {req_f:.2f}kg 페이스가 필요합니다."
+            )
+        elif delta_f is not None:
+            head = f"스프린트 현황: 목표 대비 {delta_f:.2f}kg 뒤처진 상태입니다."
+        else:
+            head = "스프린트 현황: 현재 뒤처진 구간으로 분류됩니다."
+    elif pace == "on-track":
+        if left_i is not None:
+            head = f"스프린트 현황: 현재 페이스는 유지 구간이며, 남은 {left_i}일 관리가 핵심입니다."
+        else:
+            head = "스프린트 현황: 현재 페이스는 유지 구간입니다."
+    elif pace == "ahead":
+        if left_i is not None:
+            head = f"스프린트 현황: 현재는 앞선 구간이며, 남은 {left_i}일은 방어 관리가 핵심입니다."
+        else:
+            head = "스프린트 현황: 현재는 앞선 구간입니다."
+    else:
+        return txt
+
+    if txt.startswith(head):
+        return txt
+    return f"{head} {txt}".strip()
+
+
+def _detect_today_food_risk(daily_state):
+    """
+    오늘 섭취 로그에서 고위험(패스트푸드/가공빵/튀김류) 신호를 추출한다.
+    """
+    logs = list((daily_state or {}).get("today_logs", []) or [])
+    if not logs:
+        return {"has_any": False, "has_high": False, "high_hits": [], "moderate_hits": []}
+
+    intake_lines = [str(x) for x in logs if "섭취" in str(x)]
+    if not intake_lines:
+        return {"has_any": False, "has_high": False, "high_hits": [], "moderate_hits": []}
+
+    blob = " ".join(intake_lines)
+    norm = re.sub(r"\s+", "", blob).lower()
+
+    high_keywords = [
+        # 패스트푸드/가공빵
+        "맥모닝", "햄버거", "치즈버거", "버거", "감자튀김", "프라이", "소시지빵",
+        "도넛", "도너츠", "피자빵", "치킨버거", "너겟",
+        # 고탄수/고지방 대표군(강경 코칭 대상)
+        "양념치킨", "후라이드치킨",
+        "탕수육", "짜장", "짬뽕", "중국집", "중국음식",
+    ]
+    moderate_keywords = [
+        "튀김", "라면", "짜장", "짬뽕", "떡볶이", "국밥", "우동", "순대", "만두", "피자",
+    ]
+
+    high_hits = []
+    for kw in high_keywords:
+        if re.sub(r"\s+", "", kw).lower() in norm:
+            high_hits.append(kw)
+
+    moderate_hits = []
+    for kw in moderate_keywords:
+        if re.sub(r"\s+", "", kw).lower() in norm:
+            moderate_hits.append(kw)
+
+    # 순서 보존 중복 제거
+    def _uniq(seq):
+        out = []
+        seen = set()
+        for x in seq:
+            k = str(x).strip().lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(x)
+        return out
+
+    high_hits = _uniq(high_hits)
+    moderate_hits = _uniq(moderate_hits)
+    return {
+        "has_any": bool(high_hits or moderate_hits),
+        "has_high": bool(high_hits),
+        "high_hits": high_hits,
+        "moderate_hits": moderate_hits,
+    }
+
+
+def _detect_today_alcohol_risk(daily_state):
+    logs = list((daily_state or {}).get("today_logs", []) or [])
+    if not logs:
+        return {"has_alcohol": False, "hits": []}
+    hits = []
+    for x in logs:
+        s = str(x or "")
+        if "음주" in s:
+            hits.append(s)
+    return {"has_alcohol": bool(hits), "hits": hits}
+
+
+def _resolve_food_risk_tone_level(daily_state, food_risk):
+    """
+    강경 모드 기준:
+    - 고위험 음식(패스트푸드/치킨/중식 튀김 등) 또는
+    - 음주
+    가 있으면 기본적으로 high.
+    """
+    risk = food_risk or {}
+    alcohol_risk = _detect_today_alcohol_risk(daily_state)
+    if bool(alcohol_risk.get("has_alcohol", False)):
+        return "high"
+    if bool(risk.get("has_high", False)):
+        return "high"
+    if bool(risk.get("has_any", False)):
+        return "medium"
+    return "none"
+
+
+def _downgrade_false_positive_tone(analysis, daily_state):
+    txt = str(analysis or "").strip()
+    _food_risk_fn = globals().get("_detect_today_food_risk", lambda _s: {"has_high": False})
+    _alcohol_risk_fn = globals().get("_detect_today_alcohol_risk", lambda _s: {"has_alcohol": False})
+    risk = _food_risk_fn(daily_state)
+    alcohol_risk = _alcohol_risk_fn(daily_state)
+    if not txt or ((not bool(risk.get("has_high", False))) and (not bool(alcohol_risk.get("has_alcohol", False)))):
+        return txt
+
+    # 고위험 섭취가 있을 때 '잘 진행'류 문구는 강제 교정
+    positive_patterns = [
+        r"잘\s*진행\s*중(이네요|입니다|이에요)?",
+        r"잘하고\s*계시(네요|고\s*있습니다)?",
+        r"양호(합니다|한\s*편입니다)?",
+        r"순조롭(습니다|게\s*진행)",
+        r"안정적(입니다|으로\s*가고\s*있습니다)?",
+        r"좋은\s*흐름(입니다|이에요)?",
+    ]
+    for p in positive_patterns:
+        txt = re.sub(p, "현재는 보정이 필요한 상태입니다", txt)
+
+    txt = re.sub(r"\s{2,}", " ", txt).strip()
+    return txt
+
+
+def _prepend_empathy_header(analysis, daily_state):
+    txt = str(analysis or "").strip()
+    if not txt:
+        return txt
+
+    _food_risk_fn = globals().get("_detect_today_food_risk", lambda _s: {"has_high": False, "high_hits": []})
+    _alcohol_risk_fn = globals().get("_detect_today_alcohol_risk", lambda _s: {"has_alcohol": False})
+    _risk_level_fn = globals().get("_resolve_food_risk_tone_level", lambda _s, _r: "none")
+    food_risk = _food_risk_fn(daily_state)
+    alcohol_risk = _alcohol_risk_fn(daily_state)
+    urg = (daily_state or {}).get("urgency", {}) or {}
+    level = str(urg.get("level", "") or "").strip().lower()
+    late_mode = bool((daily_state or {}).get("late_mode", False))
+    ys = (daily_state or {}).get("yesterday_summary", {}) or {}
+    alcohol_y = bool(ys.get("alcohol_yesterday", False))
+
+    risk_tone = _risk_level_fn(daily_state, food_risk)
+    if bool(alcohol_risk.get("has_alcohol", False)):
+        empath = "현재는 강경 보정 구간입니다. 음주가 들어간 날은 페이스 복구가 급격히 어려워져서 오늘은 절대 추가 음주를 막아야 합니다."
+    elif bool(food_risk.get("has_high", False)):
+        kw = ", ".join(list(food_risk.get("high_hits", []) or [])[:3])
+        if risk_tone == "high":
+            if kw:
+                empath = f"현재는 강경 보정 구간입니다. 오늘 섭취에 {kw}가 포함되어 그대로 두면 격차가 고정될 위험이 큽니다."
+            else:
+                empath = "현재는 강경 보정 구간입니다. 오늘 섭취 구성이 무거워 그대로 두면 복구 난도가 크게 올라갑니다."
+        else:
+            if kw:
+                empath = f"오늘 섭취에 {kw}가 포함되어 있어, 남은 끼니에서 균형 보정이 필요한 구간입니다."
+            else:
+                empath = "오늘은 섭취 균형 보정이 필요한 구간입니다."
+    elif level == "high":
+        empath = "지금 답답하고 조급하게 느껴지실 수 있는데, 이런 구간은 실제로 자주 나옵니다."
+    elif late_mode or alcohol_y:
+        empath = "오늘 컨디션이 흔들릴 만한 배경이 분명히 있었습니다."
+    else:
+        empath = "지금 흐름에서도 충분히 다시 정리할 수 있습니다."
+
+    if txt.startswith(empath):
+        return txt
+    return f"{empath} {txt}".strip()
+
+
+def _build_state_snapshot_line(daily_state):
+    meal = (daily_state or {}).get("meal_done", {}) or {}
+    workout = (daily_state or {}).get("workout_done", {}) or {}
+    intake = (daily_state or {}).get("intake_today", {}) or {}
+    cal = (daily_state or {}).get("calendar_flags", {}) or {}
+    sprint = (daily_state or {}).get("sprint", {}) or {}
+
+    meals_cnt = _safe_int(intake.get("meals_count_today", 0), 0)
+    kcal_now = _safe_int(intake.get("kcal_est_today", 0), 0)
+    workout_done = bool(workout.get("worked_out_today", False))
+    workout_min = _safe_int(workout.get("workout_minutes_today", 0), 0)
+
+    meal_bits = []
+    if bool(meal.get("breakfast_done", False)):
+        meal_bits.append("아침 완료")
+    if bool(meal.get("lunch_done", False)):
+        meal_bits.append("점심 완료")
+    if bool(meal.get("dinner_done", False)):
+        meal_bits.append("저녁 완료")
+    if not meal_bits:
+        meal_bits.append("식사 미기록")
+
+    cal_bits = []
+    if bool(cal.get("lunch_workout_scheduled", False)):
+        cal_bits.append("점심 운동 일정 있음")
+    if bool(cal.get("dinner_workout_scheduled", False)):
+        cal_bits.append("저녁 운동 일정 있음")
+    if bool(cal.get("lunch_appointment", False)):
+        cal_bits.append("점심 일정 있음")
+    if bool(cal.get("dinner_appointment", False)):
+        cal_bits.append("저녁 일정 있음")
+    if not cal_bits:
+        cal_bits.append("주요 식사 일정 변수 없음")
+
+    pace = str(sprint.get("pace_status", "") or "").strip().lower()
+    delta = _safe_float(sprint.get("weight_delta"), None)
+    if pace == "behind" and (delta is not None):
+        sprint_txt = f"페이스 뒤처짐({delta:.2f}kg)"
+    elif pace == "ahead":
+        sprint_txt = "페이스 앞섬"
+    elif pace == "on-track":
+        sprint_txt = "페이스 유지"
+    else:
+        sprint_txt = "페이스 정보 보통"
+
+    workout_txt = "운동 미실행" if not workout_done else f"운동 {workout_min}분 완료"
+    return (
+        f"현재 상태 요약: {', '.join(meal_bits)} / {workout_txt} / "
+        f"섭취 {meals_cnt}회·약 {kcal_now}kcal / {', '.join(cal_bits)} / {sprint_txt}."
+    )
+
+
+def _build_now_loss_gain_hint(daily_state):
+    _food_risk_fn = globals().get("_detect_today_food_risk", lambda _s: {"has_high": False, "high_hits": []})
+    _alcohol_risk_fn = globals().get("_detect_today_alcohol_risk", lambda _s: {"has_alcohol": False})
+    food_risk = _food_risk_fn(daily_state)
+    alcohol_risk = _alcohol_risk_fn(daily_state)
+    meal = (daily_state or {}).get("meal_done", {}) or {}
+    workout = (daily_state or {}).get("workout_done", {}) or {}
+    intake = (daily_state or {}).get("intake_today", {}) or {}
+    sprint = (daily_state or {}).get("sprint", {}) or {}
+    slots = list((daily_state or {}).get("available_slots", []) or [])
+    enabled_now = any(bool(s.get("enabled")) and bool(s.get("active_now")) for s in slots)
+    pace = str(sprint.get("pace_status", "") or "").strip().lower()
+    delta = _safe_float(sprint.get("weight_delta"), None)
+    req = _safe_float(sprint.get("required_daily_pace"), None)
+
+    kcal_now = _safe_int(intake.get("kcal_est_today", 0), 0)
+    kcal_target = _safe_int(intake.get("kcal_target_today", DEFAULT_DAILY_KCAL_TARGET), DEFAULT_DAILY_KCAL_TARGET)
+    over_kcal = (kcal_now - kcal_target) >= 250
+
+    if bool(alcohol_risk.get("has_alcohol", False)):
+        loss = "음주가 들어간 날에 추가 탄수·야식이 붙으면 내일 반등폭이 급격히 커져 스프린트 복구가 매우 어려워집니다."
+        gain = "지금부터 추가 섭취를 끊고 수분·수면을 지키면 내일 반등폭을 유의미하게 줄일 수 있습니다."
+        return loss, gain
+
+    if bool(food_risk.get("has_high", False)):
+        kw = ", ".join(list(food_risk.get("high_hits", []) or [])[:3]) or "고열량 가공식"
+        loss = f"오늘 {kw}가 들어간 상태에서 추가 탄수·간식이 붙으면 격차가 고정되어 내일 복구 난도가 커질 수 있습니다."
+        gain = "남은 식사를 단백질·채소 중심으로 보정하면 오늘 손실 폭을 줄이고 내일 붓기 반등을 막는 데 유리합니다."
+        return loss, gain
+
+    if (not meal.get("lunch_done", False)) and (not meal.get("dinner_done", False)):
+        if (pace == "behind") and (delta is not None) and (delta > 0):
+            loss = f"점심을 탄수 위주로 두면 현재 {delta:.2f}kg 격차가 저녁 과식으로 더 벌어질 가능성이 큽니다."
+            gain = "점심을 단백질·채소 중심으로 두면 저녁 허기를 낮춰 오늘 격차 확대를 막는 데 유리합니다."
+        else:
+            loss = "점심을 탄수 위주로 두면 오후 허기가 커져 저녁 과식으로 이어질 가능성이 큽니다."
+            gain = "점심을 단백질·채소 중심으로 두면 저녁 폭식을 줄이고 내일 붓기 감소에 유리합니다."
+        return loss, gain
+
+    if (not workout.get("worked_out_today", False)) and enabled_now:
+        if (pace == "behind") and (req is not None):
+            loss = f"운동 슬롯을 비우면 필요한 일일 페이스({req:.2f}kg/일) 대비 오늘 누적 손실이 커질 수 있습니다."
+            gain = "운동 슬롯에서 20분만 채워도 당일 소모를 확보해 내일 체중 반등을 낮추는 데 도움이 됩니다."
+        else:
+            loss = "운동 슬롯을 비우면 오늘 소모가 0에 가까워져 체중 흐름이 둔해질 수 있습니다."
+            gain = "운동 슬롯에서 20분만 채워도 당일 소모를 확보해 밤 붓기 완화에 도움이 됩니다."
+        return loss, gain
+
+    if over_kcal:
+        loss = "추가 섭취가 이어지면 오늘 칼로리 초과가 커져 내일 체중 반등폭이 커질 수 있습니다."
+        gain = "추가 섭취를 멈추면 초과 칼로리를 제한해 내일 반등폭을 줄이는 데 유리합니다."
+        return loss, gain
+
+    loss = "핵심 행동이 뒤로 밀리면 남은 시간 선택지가 줄어 페이스 복구 여지가 작아질 수 있습니다."
+    gain = "핵심 행동 1개만 먼저 확정하면 오늘 페이스를 안정적으로 유지하는 데 유리합니다."
+    return loss, gain
+
+
+def _build_contextual_why_line(daily_state):
+    sprint = (daily_state or {}).get("sprint", {}) or {}
+    meal = (daily_state or {}).get("meal_done", {}) or {}
+    workout = (daily_state or {}).get("workout_done", {}) or {}
+    intake = (daily_state or {}).get("intake_today", {}) or {}
+
+    pace = str(sprint.get("pace_status", "") or "").strip().lower()
+    delta = _safe_float(sprint.get("weight_delta"), None)
+    req = _safe_float(sprint.get("required_daily_pace"), None)
+    days_left = _safe_int(sprint.get("days_remaining"), 0)
+    kcal_delta = _safe_int(intake.get("kcal_delta_today", 0), 0)
+    lunch_done = bool(meal.get("lunch_done", False))
+    dinner_done = bool(meal.get("dinner_done", False))
+    worked = bool(workout.get("worked_out_today", False))
+
+    if (pace == "behind") and (delta is not None) and (delta > 0):
+        if req is not None:
+            return (
+                f"왜 이걸 우선하냐면: 현재 {delta:.2f}kg 뒤처진 상태라 남은 {days_left}일 동안 "
+                f"하루 {req:.2f}kg 페이스를 맞추려면 오늘 선택이 바로 반영되기 때문입니다."
+            )
+        return f"왜 이걸 우선하냐면: 현재 {delta:.2f}kg 뒤처진 상태라 오늘 흐름이 그대로 격차로 남기 때문입니다."
+
+    if (not lunch_done) and (not dinner_done):
+        return "왜 이걸 우선하냐면: 점심 구성이 흔들리면 저녁 허기가 커져 하루 전체가 무너지기 쉬운 구간이기 때문입니다."
+
+    if (not worked):
+        return "왜 이걸 우선하냐면: 오늘 운동 기록이 0회면 체중보다 먼저 컨디션과 수면 리듬이 무너지기 쉽기 때문입니다."
+
+    if kcal_delta >= 250:
+        return "왜 이걸 우선하냐면: 이미 섭취 초과 구간이라 추가 선택 1~2개가 내일 체중 반등폭을 키우기 때문입니다."
+
+    if dinner_done:
+        return "왜 이걸 우선하냐면: 지금은 더 잘 먹는 것보다 추가 섭취를 멈추는 쪽이 내일 상태에 더 크게 작용하기 때문입니다."
+
+    return "왜 이걸 우선하냐면: 지금 구간은 작은 선택 1개가 내일 체중·컨디션에 가장 크게 반영되는 시간대이기 때문입니다."
 
 
 def build_forced_next_action_from_state(daily_state):
@@ -4041,19 +4572,212 @@ def build_forced_next_action_from_state(daily_state):
         label = str(s.get("label") or s.get("slot_id") or "다음 슬롯")
         start = str(s.get("start") or "")
         end = str(s.get("end") or "")
-        return f"지금 확정 행동: {label}({start}-{end}) 기준으로 운동 1회를 캘린더/할 일 목록에 즉시 고정하고 실행하십시오."
+        return (
+            f"현 시점 우선 1개: {label}({start}-{end})를 오늘의 1순위 운동 슬롯으로 고정하세요. "
+            "해당 시간대에는 20분 걷기부터 시작해 기록까지 마무리하면 됩니다."
+        )
     if enabled_later:
         s = enabled_later[0]
         label = str(s.get("label") or s.get("slot_id") or "다음 슬롯")
         start = str(s.get("start") or "")
         end = str(s.get("end") or "")
-        return f"지금 확정 행동: {label}({start}-{end}) 시작 전까지 식사/수분/장비 준비를 완료하고, 시작 시각에 즉시 실행하십시오."
-    return "지금 확정 행동: 오늘은 추가 섭취를 종료하고 수분 보충 후 수면 복구를 즉시 실행하십시오."
+        return (
+            f"현 시점 우선 1개: {label}({start}-{end}) 시작 시각을 운동 시작선으로 잡으세요. "
+            "그 시간대에는 20분 걷기 1회를 우선 완료하는 방향이 좋습니다."
+        )
+    return "현 시점 우선 1개: 오늘은 추가 섭취를 멈추고 수면 회복을 우선순위로 두세요."
+
+
+def _normalize_warning_text(warns, daily_state):
+    raw = str(warns or "").strip()
+    _food_risk_fn = globals().get("_detect_today_food_risk", lambda _s: {"has_high": False, "high_hits": []})
+    _alcohol_risk_fn = globals().get("_detect_today_alcohol_risk", lambda _s: {"has_alcohol": False})
+    _risk_level_fn = globals().get("_resolve_food_risk_tone_level", lambda _s, _r: "none")
+    food_risk = _food_risk_fn(daily_state)
+    alcohol_risk = _alcohol_risk_fn(daily_state)
+    sprint = (daily_state or {}).get("sprint", {}) or {}
+    intake = (daily_state or {}).get("intake_today", {}) or {}
+    meal = (daily_state or {}).get("meal_done", {}) or {}
+    workout = (daily_state or {}).get("workout_done", {}) or {}
+
+    pace = str(sprint.get("pace_status", "") or "").strip().lower()
+    gap = _safe_float(sprint.get("weight_delta"), None)
+    days_left = _safe_int(sprint.get("days_remaining"), 0)
+    req = _safe_float(sprint.get("required_daily_pace"), None)
+    kcal_delta = _safe_int(intake.get("kcal_delta_today", 0), 0)
+    worked = bool(workout.get("worked_out_today", False))
+    dinner_done = bool(meal.get("dinner_done", False))
+
+    generic_signals = [
+        "청량하고 가벼운",
+        "집중하세요",
+        "목표 대비 지연 상태이므로",
+        "하루 목표 달성",
+    ]
+    is_generic = (not raw) or any(g in raw for g in generic_signals)
+
+    risk_tone = _risk_level_fn(daily_state, food_risk)
+    if bool(alcohol_risk.get("has_alcohol", False)):
+        return (
+            "음주가 기록된 날은 스프린트 관점에서 절대 금물 구간입니다. "
+            "오늘은 추가 음주·야식을 즉시 차단하고 수분·수면 회복에 집중해야 합니다."
+        )
+
+    if bool(food_risk.get("has_high", False)):
+        kw = ", ".join(list(food_risk.get("high_hits", []) or [])[:3]) or "고열량 가공식"
+        if risk_tone == "high":
+            return (
+                f"오늘 섭취({kw})는 현재 페이스에서 손실이 큰 선택입니다. "
+                "남은 식사는 탄수 추가를 멈추고 단백질·채소로 보정해야 격차 확대를 막을 수 있습니다."
+            )
+        return (
+            f"오늘 섭취({kw})가 포함되어 있어 남은 끼니에서 균형 보정이 필요합니다. "
+            "저녁은 탄수를 줄이고 단백질·채소 중심으로 정리해 주세요."
+        )
+
+    if not is_generic:
+        return raw
+
+    if (pace == "behind") and (gap is not None) and (gap > 0):
+        if req is not None:
+            return (
+                f"목표 대비 {gap:.2f}kg 뒤처진 상태입니다. 오늘 저녁 추가 탄수·야식이 들어가면 "
+                f"남은 {days_left}일 필요 페이스({req:.2f}kg/일) 복구 난도가 크게 올라갑니다."
+            )
+        return f"목표 대비 {gap:.2f}kg 뒤처진 상태입니다. 오늘 추가 섭취가 들어가면 격차가 고정될 위험이 큽니다."
+
+    if kcal_delta >= 250:
+        return (
+            f"현재 섭취가 목표보다 {kcal_delta}kcal 초과입니다. "
+            "지금 추가 간식 1~2회가 내일 체중 반등폭을 키울 수 있습니다."
+        )
+
+    if (not worked) and dinner_done:
+        return "오늘은 운동보다 추가 섭취 차단이 더 중요합니다. 저녁 이후 간식·야식이 들어가면 내일 붓기 반등 위험이 큽니다."
+
+    if (not worked):
+        return "오늘 운동 미실행 상태입니다. 최소 20분 걷기 1회를 못 채우면 수면 리듬과 내일 컨디션이 먼저 흔들릴 수 있습니다."
+
+    return "오늘은 큰 무리보다 추가 섭취를 막고 수면 회복을 확보하는 쪽이 내일 체중 방어에 유리합니다."
+
+
+def _build_personalized_blocking_line(daily_state):
+    _food_risk_fn = globals().get("_detect_today_food_risk", lambda _s: {"has_high": False, "high_hits": []})
+    _alcohol_risk_fn = globals().get("_detect_today_alcohol_risk", lambda _s: {"has_alcohol": False})
+    _risk_level_fn = globals().get("_resolve_food_risk_tone_level", lambda _s, _r: "none")
+    food_risk = _food_risk_fn(daily_state)
+    alcohol_risk = _alcohol_risk_fn(daily_state)
+    risk_tone = _risk_level_fn(daily_state, food_risk)
+    sprint = (daily_state or {}).get("sprint", {}) or {}
+    intake = (daily_state or {}).get("intake_today", {}) or {}
+    meal = (daily_state or {}).get("meal_done", {}) or {}
+    workout = (daily_state or {}).get("workout_done", {}) or {}
+
+    pace = str(sprint.get("pace_status", "") or "").strip().lower()
+    gap = _safe_float(sprint.get("weight_delta"), None)
+    days_left = _safe_int(sprint.get("days_remaining"), 0)
+    req = _safe_float(sprint.get("required_daily_pace"), None)
+    kcal_delta = _safe_int(intake.get("kcal_delta_today", 0), 0)
+
+    lunch_done = bool(meal.get("lunch_done", False))
+    dinner_done = bool(meal.get("dinner_done", False))
+    worked = bool(workout.get("worked_out_today", False))
+
+    if bool(alcohol_risk.get("has_alcohol", False)):
+        return "오늘 방어선: 음주가 이미 들어간 날이라 추가 음주·야식이 붙으면 내일 반등폭이 급격히 커지고 복구 난도가 크게 올라갑니다."
+
+    if bool(food_risk.get("has_high", False)):
+        kw = ", ".join(list(food_risk.get("high_hits", []) or [])[:3]) or "고열량 가공식"
+        if risk_tone == "high":
+            return f"오늘 방어선: {kw} 섭취가 이미 들어간 상태라 남은 끼니에서 탄수·간식이 추가되면 내일 반등폭이 빠르게 커질 수 있습니다."
+        return f"오늘 방어선: {kw}가 있었던 만큼 남은 끼니는 단순하게 가져가야 내일 반등폭을 줄일 수 있습니다."
+
+    if (pace == "behind") and (gap is not None) and (gap > 0):
+        if req is not None:
+            return (
+                f"오늘 방어선: 지금 식사·운동이 흔들리면 {gap:.2f}kg 격차가 내일 고정되고, "
+                f"남은 {days_left}일 필요 페이스({req:.2f}kg/일)가 더 가팔라집니다."
+            )
+        return f"오늘 방어선: 지금 흔들리면 {gap:.2f}kg 격차가 내일 체중에 그대로 남을 가능성이 큽니다."
+
+    if (not lunch_done) and (not dinner_done):
+        return "오늘 방어선: 점심 구성이 무너지면 저녁 허기가 커져 과식으로 이어질 확률이 높습니다."
+
+    if kcal_delta >= 250:
+        return f"오늘 방어선: 이미 {kcal_delta}kcal 초과 구간이라 추가 간식 1~2회가 내일 반등폭을 키울 수 있습니다."
+
+    if dinner_done and (not worked):
+        return "오늘 방어선: 저녁 이후 추가 섭취가 들어가면 운동 미실행 상태와 겹쳐 내일 컨디션이 먼저 무너질 수 있습니다."
+
+    if not worked:
+        return "오늘 방어선: 운동 기록이 0회로 끝나면 체중보다 먼저 수면 리듬과 집중력이 흔들릴 수 있습니다."
+
+    return "오늘 방어선: 지금부터는 잘 먹는 것보다 추가 섭취를 멈추는 쪽이 내일 상태를 지키는 데 더 중요합니다."
+
+
+def _build_personalized_gain_line(daily_state):
+    _food_risk_fn = globals().get("_detect_today_food_risk", lambda _s: {"has_high": False})
+    _alcohol_risk_fn = globals().get("_detect_today_alcohol_risk", lambda _s: {"has_alcohol": False})
+    _risk_level_fn = globals().get("_resolve_food_risk_tone_level", lambda _s, _r: "none")
+    food_risk = _food_risk_fn(daily_state)
+    alcohol_risk = _alcohol_risk_fn(daily_state)
+    risk_tone = _risk_level_fn(daily_state, food_risk)
+    sprint = (daily_state or {}).get("sprint", {}) or {}
+    intake = (daily_state or {}).get("intake_today", {}) or {}
+    meal = (daily_state or {}).get("meal_done", {}) or {}
+    workout = (daily_state or {}).get("workout_done", {}) or {}
+
+    pace = str(sprint.get("pace_status", "") or "").strip().lower()
+    gap = _safe_float(sprint.get("weight_delta"), None)
+    req = _safe_float(sprint.get("required_daily_pace"), None)
+    days_left = _safe_int(sprint.get("days_remaining"), 0)
+    kcal_delta = _safe_int(intake.get("kcal_delta_today", 0), 0)
+
+    lunch_done = bool(meal.get("lunch_done", False))
+    worked = bool(workout.get("worked_out_today", False))
+
+    if bool(alcohol_risk.get("has_alcohol", False)):
+        return "오늘 이득: 지금부터 추가 음주·야식을 끊으면 내일 반등폭을 줄이고 컨디션 붕괴를 막는 데 가장 큰 효과가 있습니다."
+
+    if bool(food_risk.get("has_high", False)):
+        if risk_tone == "high":
+            return "오늘 이득: 남은 끼니를 단백질·채소로 고정하면 오늘 손실을 최소화하고 내일 반등폭을 확실히 줄일 수 있습니다."
+        return "오늘 이득: 남은 끼니를 가볍게 정리하면 오늘 섭취 영향을 완만하게 눌러 내일 컨디션을 지킬 수 있습니다."
+
+    if (pace == "behind") and (gap is not None) and (gap > 0):
+        if req is not None:
+            return (
+                f"오늘 이득: 핵심 1개만 지켜도 격차 확대를 막아 필요 페이스({req:.2f}kg/일)를 "
+                f"현실 범위로 유지할 수 있습니다."
+            )
+        return "오늘 이득: 핵심 1개만 지켜도 격차 확대를 막아 복구 난도를 크게 낮출 수 있습니다."
+
+    if not lunch_done:
+        return "오늘 이득: 점심을 단백질·채소로 고정하면 저녁 허기가 줄어 야식 확률을 낮출 수 있습니다."
+
+    if not worked:
+        return "오늘 이득: 20~30분 걷기 1회만 채워도 내일 붓기와 피로 반등폭을 눈에 띄게 줄일 수 있습니다."
+
+    if kcal_delta >= 250:
+        return "오늘 이득: 추가 섭취를 멈추면 내일 체중 반등폭을 줄이고 컨디션 회복 속도를 높일 수 있습니다."
+
+    if days_left > 0:
+        return f"오늘 이득: 남은 {days_left}일 동안 현재 흐름을 지키면 불필요한 극단 플랜 없이도 페이스 유지가 가능합니다."
+
+    return "오늘 이득: 지금 선택을 단순화하면 내일 체중과 컨디션을 동시에 안정적으로 가져갈 수 있습니다."
 
 
 def validate_action_plan_output(result, daily_state):
     if not isinstance(result, dict):
         return result
+
+    # 테스트 환경(함수 단독 로드)에서도 안전하게 동작하도록 헬퍼 fallback을 둔다.
+    _apply_guard = globals().get("_apply_calendar_fact_guard", lambda t, _s: str(t or ""))
+    _rewrite_vague = globals().get("_rewrite_vague_korean", lambda t: str(t or ""))
+    _humanize = globals().get("humanize_action_text", lambda t: str(t or ""))
+    _polish = globals().get("polish_korean_coaching_text", lambda t: str(t or ""))
+    _dedupe_sent = globals().get("_dedupe_consecutive_sentences", lambda t: str(t or ""))
+    _warn_norm = globals().get("_normalize_warning_text", lambda w, _s: str(w or ""))
 
     text = str(result.get("next_actions", "") or "")
     warns = str(result.get("warnings", "") or "")
@@ -4064,34 +4788,23 @@ def validate_action_plan_output(result, daily_state):
     analysis = analysis.replace("초저녁", "저녁")
 
     text = _sanitize_plan_lines(text)
+    text = "\n".join(_dedupe_sent(x) for x in str(text).splitlines() if str(x).strip()).strip()
+    analysis = _dedupe_sent(analysis)
 
-    slots = list((daily_state or {}).get("available_slots", []) or [])
-    active_now_count = sum(1 for s in slots if s.get("enabled") and s.get("active_now"))
-    if active_now_count == 0:
-        low = text.lower()
-        has_immediate_word = any(tok in low for tok in ["지금 당장", "바로", "즉시", "now", "right now"])
-        has_exercise_word = any(tok in low for tok in ["운동", "러닝", "조깅", "달리기", "헬스", "걷기", "workout", "run", "jog"])
-        if has_immediate_word and has_exercise_word:
-            text = (
-                "현재 시각에는 즉시 실행 가능한 운동 슬롯이 없습니다. "
-                "열려 있는 다음 슬롯 시작 전까지 식사/수분/준비를 정리하고, 슬롯 시작 시점에 바로 실행하십시오."
-            )
+    analysis = _apply_guard(analysis, daily_state)
+    text = _apply_guard(text, daily_state)
 
-    banned = ["내일", "tomorrow", "다음 주", "다음주", "next day"]
-    safe_lines = []
-    for line in str(text).splitlines():
-        low = line.lower()
-        if any(tok.lower() in low for tok in banned):
-            continue
-        safe_lines.append(line)
-    text = "\n".join(safe_lines).strip()
+    analysis = _rewrite_vague(analysis)
+    text = _rewrite_vague(text)
+    if not text.strip():
+        text = "오늘 남은 시간 기준으로 가장 현실적인 핵심 1개를 먼저 정하고, 실행 조건(시간·장소·분량)을 붙여 확정하세요."
+    warns = _rewrite_vague(warns)
+    warns = _warn_norm(warns, daily_state)
+    warns = _dedupe_sent(warns)
 
-    analysis = _apply_calendar_fact_guard(analysis, daily_state)
-    text = _apply_calendar_fact_guard(text, daily_state)
-
-    result["current_analysis"] = polish_korean_coaching_text(humanize_action_text(analysis))
-    result["next_actions"] = polish_korean_coaching_text(humanize_action_text(text))
-    result["warnings"] = polish_korean_coaching_text(warns.strip())
+    result["current_analysis"] = _polish(_humanize(analysis))
+    result["next_actions"] = _polish(_humanize(text))
+    result["warnings"] = _polish(warns.strip())
     return result
 
 
@@ -4127,9 +4840,227 @@ def build_rule_based_action_plan(daily_state, daily_five_focus=None):
     return "\n".join(lines)
 
 
+def format_coaching_readability_markdown(text):
+    """
+    Action Plan 출력 가독성 개선용:
+    - ':' 기반 소제목 문장을 줄 분리
+    - 항목별 불릿 + 굵은 소제목으로 렌더링
+    """
+    src = str(text or "").replace("\r\n", "\n").strip()
+    if not src:
+        return "- 없음"
+
+    heading_tokens = [
+        "지금 상황",
+        "스프린트 현황",
+        "현재 상태 요약",
+        "현 시점 제안",
+        "현 시점 우선 1개",
+        "왜 이걸 우선하냐면",
+        "오늘 방어선",
+        "오늘 이득",
+        "경고",
+        "주의",
+        "핵심",
+        "지금 할 일",
+    ]
+
+    normalized = src
+    # 특정 헤딩 토큰은 문장 중간에 있어도 강제로 줄 분리
+    for token in heading_tokens:
+        normalized = re.sub(
+            rf"(?<!\n)\s*({re.escape(token)}\s*:)",
+            r"\n\1",
+            normalized,
+        )
+
+    # 문장부호 뒤에 오는 짧은 '라벨:' 패턴도 줄 분리
+    normalized = re.sub(
+        r"([.!?])\s+([가-힣A-Za-z][^:\n]{0,20}:)",
+        r"\1\n\2",
+        normalized,
+    )
+
+    lines = []
+    for raw in normalized.split("\n"):
+        line = re.sub(r"\s+", " ", raw).strip()
+        if not line:
+            continue
+        if line.startswith("- "):
+            lines.append(line)
+            continue
+
+        if ":" in line:
+            head, body = line.split(":", 1)
+            head = head.strip()
+            body = body.strip()
+            # 너무 긴 문장까지 헤딩 처리하지 않도록 제한
+            if (1 <= len(head) <= 24) and re.search(r"[가-힣A-Za-z]", head):
+                if body:
+                    lines.append(f"- **{head}:** {body}")
+                else:
+                    lines.append(f"- **{head}:**")
+                continue
+
+        lines.append(f"- {line}")
+
+    return "\n".join(lines) if lines else "- 없음"
+
+
 # ==========================================
 # AI 생성부 (Daily Five / Check-in / Action Plan)
 # ==========================================
+
+def _df_has_concrete_detail(text):
+    t = str(text or "")
+    # 시간/분량/수치가 있으면 실행성이 높다고 간주
+    return bool(re.search(r"\d+(\.\d+)?\s*(분|회|km|kg|g|kcal|잔|개|시|:\d{2}|ml|L|층)", t))
+
+
+def _df_force_task_specificity(task, idx, progress, slots):
+    t = dict(task or {})
+    gap = _safe_float((progress or {}).get("weight_delta"), None)
+    req = _safe_float((progress or {}).get("required_daily_pace"), None)
+    pace = str((progress or {}).get("pace_status", "") or "").strip().lower()
+    days_left = _safe_int((progress or {}).get("days_remaining"), 0)
+    slot_list = list(slots or [])
+    active_now = next((s for s in slot_list if bool(s.get("enabled")) and bool(s.get("active_now"))), None)
+    enabled_later = next((s for s in slot_list if bool(s.get("enabled")) and (not bool(s.get("active_now")))), None)
+
+    title = str(t.get("title", "") or "").strip()
+    desc = str(t.get("description", "") or "").strip()
+    why = str(t.get("why", "") or "").strip()
+
+    if not title:
+        if idx == 1:
+            if active_now:
+                sl = str(active_now.get("label") or active_now.get("slot_id") or "현재 가능")
+                title = f"오늘 우선: {sl} 슬롯 20분 걷기 1회"
+            elif enabled_later:
+                sl = str(enabled_later.get("label") or enabled_later.get("slot_id") or "다음 가능")
+                st = str(enabled_later.get("start") or "")
+                title = f"오늘 우선: {sl}({st}) 슬롯 시작선 고정"
+            else:
+                title = "오늘 우선: 식단·수분 방어 1개 확정"
+        elif idx == 2:
+            title = "오늘 점심 탄수 0으로 고정"
+        elif idx == 3:
+            title = "퇴근 후 추가 섭취 차단"
+        elif idx == 4:
+            title = "저녁 전 수분·붓기 관리"
+        else:
+            title = "오늘 기록 1회 완료"
+
+    if "오늘" not in title:
+        title = f"오늘 {title}"
+
+    if not desc:
+        if idx == 1:
+            if active_now:
+                st = str(active_now.get("start") or "")
+                ed = str(active_now.get("end") or "")
+                desc = f"실행: {st}-{ed} 사이에 20분 걷기 1회를 완료하고 기록하세요."
+            elif enabled_later:
+                st = str(enabled_later.get("start") or "")
+                ed = str(enabled_later.get("end") or "")
+                desc = f"실행: {st}-{ed} 시간대를 오늘 운동 우선 슬롯으로 고정하고 20분 걷기 1회를 채우세요."
+            else:
+                desc = "실행: 오늘은 운동 슬롯이 부족하니 저녁 추가 섭취를 막고 수면을 30분 앞당기세요."
+        elif idx == 2:
+            desc = "실행: 점심은 단백질+채소로 먹고 밥/면/튀김은 빼세요."
+        elif idx == 3:
+            desc = "실행: 저녁은 탄수 없이 단백질 소량으로 마무리하세요."
+        elif idx == 4:
+            desc = "실행: 오후 16시 이후 물 300ml 이내로 조절하세요."
+        else:
+            desc = "실행: 오늘 마지막에 식사/운동/복약 기록을 1회 완료하세요."
+
+    if not desc.startswith("실행:"):
+        desc = f"실행: {desc}"
+    if not _df_has_concrete_detail(desc):
+        # 수치가 없으면 최소 실행 단위를 강제로 붙인다.
+        desc = f"{desc} (최소 20분 또는 1회 기준)"
+
+    if not why:
+        why = "안 하면 오늘 페이스가 밀리는 손해가 있고, 하면 오늘 복구 속도가 좋아집니다."
+    # why에 손해/개선 포인트가 없으면 강제로 보완
+    if ("손해" not in why) or (not any(x in why for x in ["좋아집", "유리", "개선", "줄어", "낮출 수", "좋은 점"])):
+        if (pace == "behind") and (gap is not None) and (gap > 0):
+            why = (
+                f"안 하면 현재 {gap:.2f}kg 격차가 더 벌어져 남은 {days_left}일 복구 난도가 커지는 손해가 있고, "
+                f"하면 오늘 격차 확대를 막아 회복 페이스에 유리합니다."
+            )
+        elif req is not None:
+            why = (
+                f"안 하면 필요한 일일 페이스 {req:.2f}kg/일 대비 누적 손실이 커지는 손해가 있고, "
+                f"하면 내일 반등을 낮춰 주간 페이스 유지에 좋은 점이 있습니다."
+            )
+        else:
+            why = "안 하면 오늘 페이스가 밀리는 손해가 있고, 하면 내일 체중 방어에 유리합니다."
+
+    t["title"] = polish_korean_coaching_text(title)
+    t["description"] = polish_korean_coaching_text(desc)
+    t["why"] = polish_korean_coaching_text(why)
+    t["task_id"] = str(t.get("task_id", f"task_{idx}") or f"task_{idx}")
+    t["priority"] = max(1, min(5, _safe_int(t.get("priority", idx), idx)))
+    t["category"] = str(t.get("category", "diet") or "diet")
+    return t
+
+
+def _normalize_daily_five_result(result, progress, slots, default_mode):
+    out = dict(result or {})
+    tasks = list(out.get("tasks", []) or [])
+    tasks = [x for x in tasks if isinstance(x, dict)]
+    tasks = tasks[:5]
+
+    # 부족한 과제는 강제 보충
+    while len(tasks) < 5:
+        tasks.append({})
+
+    normalized = []
+    for i in range(1, 6):
+        normalized.append(_df_force_task_specificity(tasks[i - 1], i, progress, slots))
+
+    out["tasks"] = normalized
+
+    msg = str(out.get("daily_message", "") or "").strip()
+    pace = str((progress or {}).get("pace_status", "") or "").strip().lower()
+    gap = _safe_float((progress or {}).get("weight_delta"), None)
+    req = _safe_float((progress or {}).get("required_daily_pace"), None)
+    days_left = _safe_int((progress or {}).get("days_remaining"), 0)
+    day_now = _safe_int((progress or {}).get("day"), 0)
+    if not msg:
+        if (pace == "behind") and (gap is not None) and (gap > 0):
+            if req is not None:
+                msg = (
+                    f"스프린트 Day {day_now} 기준 위기 구간입니다. 목표 대비 {gap:.2f}kg 뒤처져 있고, "
+                    f"남은 {days_left}일 동안 필요한 평균은 {req:.2f}kg/일입니다."
+                )
+            else:
+                msg = f"스프린트 Day {day_now} 기준 위기 구간입니다. 목표 대비 {gap:.2f}kg 뒤처져 있습니다."
+        elif req is not None:
+            msg = (
+                f"스프린트 Day {day_now} 기준 관리 구간입니다. 남은 {days_left}일 동안 "
+                f"{req:.2f}kg/일 페이스를 유지할 수 있는 선택이 필요합니다."
+            )
+        else:
+            msg = "오늘은 페이스 점검 구간입니다. 핵심 행동 1개를 먼저 확정하면 흐름을 지킬 수 있습니다."
+    out["daily_message"] = polish_korean_coaching_text(msg)
+
+    mode = str(out.get("today_training_mode", "") or "").strip().lower()
+    if mode not in {"recovery", "build", "push"}:
+        mode = str(default_mode or "build")
+    out["today_training_mode"] = mode
+
+    urg = str(out.get("urgency_level", "") or "").strip().lower()
+    if urg not in {"high", "medium", "low"}:
+        if (pace == "behind") and (gap is not None) and (gap > 0):
+            urg = "high"
+        else:
+            urg = "medium"
+    out["urgency_level"] = urg
+    return out
+
 
 @st.cache_data(ttl=3600*24)
 def ai_generate_daily_five(date_key, sprint, current_status, context):
@@ -4198,9 +5129,12 @@ DEFAULT_TRAINING_MODE: {default_mode}
 - available_slots 사실과 모순되지 않아야 합니다.
 - 표현과 전략은 자율적으로 구성하십시오.
 - 5개 모두 구체적이고 실행 가능한 과제로 작성하십시오.
+- task_1은 반드시 '현 시점 기준 최우선 과제'로 작성하고, 슬롯이 없으면 대체 방어 과제를 제시하십시오.
 - 각 과제는 "제목(title)" + "실행(description)" 두 요소만 명확히 작성하십시오.
 - description에는 가능한 시간대/분량/장소 중 최소 2개를 포함해, 바로 행동 가능한 문장으로 작성하십시오.
-- why에는 해당 과제가 오늘 스프린트 달성에 왜 중요한지 1문장으로 작성하십시오.
+- why에는 반드시 아래 2요소를 모두 포함하십시오:
+  1) 지금 안 하면 생기는 손해
+  2) 지금 하면 좋아지는 점
 - "운동하십시오", "관리하세요" 같은 일반론 문장만 단독으로 쓰지 마십시오.
 - 번역투/부자연스러운 표현(예: 과식 차단)을 피하고 자연스러운 한국어를 사용하십시오.
 - 어제 운동 기록이 있으면 강점 1개 + 보완점 1개를 daily_message에 짧게 반영하십시오.
@@ -4232,30 +5166,7 @@ DEFAULT_TRAINING_MODE: {default_mode}
             response_format={"type": "json_object"}
         )
         result = json.loads(response.choices[0].message.content)
-
-        for i, task in enumerate(result.get('tasks', [])):
-            if 'task_id' not in task:
-                task['task_id'] = f"task_{i+1}"
-            title = polish_korean_coaching_text(str(task.get("title", "") or "").strip())
-            desc = polish_korean_coaching_text(str(task.get("description", "") or "").strip())
-            why = polish_korean_coaching_text(str(task.get("why", "") or "").strip())
-            if not desc and title:
-                desc = f"실행: {title}"
-            if desc and (not desc.startswith("실행:")):
-                desc = f"실행: {desc}"
-            if not why:
-                why = "오늘 스프린트 목표 달성 확률을 높이는 핵심 행동입니다."
-            task["title"] = title
-            task["description"] = desc
-            task["why"] = why
-
-        result["daily_message"] = polish_korean_coaching_text(str(result.get("daily_message", "") or "").strip())
-
-        mode = str(result.get("today_training_mode", "") or "").strip().lower()
-        if mode not in {"recovery", "build", "push"}:
-            mode = default_mode
-        result["today_training_mode"] = mode
-
+        result = _normalize_daily_five_result(result, progress, slots, default_mode)
         return result
 
     except Exception as e:
@@ -4458,9 +5369,113 @@ def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=
 
 @st.cache_data(ttl=3600*24)
 def ai_generate_daily_checkin(date_key, hrv, rhr, weight, morning_context, calendar_str):
+    def _contains_positive_signal(t: str) -> bool:
+        return any(x in str(t or "") for x in ["좋은 점", "유리", "개선", "줄어", "완화", "낮출 수", "안정"])
+
+    def _normalize_daily_checkin_result(result, sprint_progress, work_constraint):
+        out = dict(result or {})
+        signal = str(out.get("condition_signal", "") or "").strip().lower()
+        if signal not in {"green", "yellow", "red"}:
+            signal = "yellow"
+        out["condition_signal"] = signal.capitalize()
+
+        pace = str((sprint_progress or {}).get("pace_status", "") or "").strip().lower()
+        day_no = _safe_int((sprint_progress or {}).get("day"), 0)
+        days_left = _safe_int((sprint_progress or {}).get("days_remaining"), 0)
+        gap = _safe_float((sprint_progress or {}).get("weight_delta"), None)
+        req = _safe_float((sprint_progress or {}).get("required_daily_pace"), None)
+
+        headline = str(out.get("headline", "") or "").strip()
+        if not headline:
+            if (pace == "behind") and (gap is not None) and (gap > 0):
+                headline = f"오늘은 복구 우선 구간입니다. Day {day_no} 기준 격차 관리가 핵심입니다."
+            elif signal == "red":
+                headline = "오늘은 회복 우선 구간입니다. 무리한 강도보다 리듬 복구가 우선입니다."
+            elif signal == "green":
+                headline = "오늘은 밀어도 되는 구간입니다. 다만 저녁 변수만 막으면 됩니다."
+            else:
+                headline = "오늘은 관리 구간입니다. 점심·저녁 선택이 체중 흐름을 좌우합니다."
+
+        reason = str(out.get("headline_reason", "") or "").strip()
+        if not reason:
+            reason = f"현재 지표는 HRV {hrv:.0f}, RHR {rhr:.0f}, 체중 {weight:.1f}kg 기준입니다."
+
+        analysis = str(out.get("analysis", "") or "").strip()
+        if not analysis:
+            analysis = "아침 지표와 최근 기록을 보면, 오늘은 선택 1~2개가 내일 체중 반등폭을 결정하는 구간입니다."
+
+        vitals_line = f"현재 지표는 HRV {hrv:.0f}, RHR {rhr:.0f}, 체중 {weight:.1f}kg입니다."
+        if ("HRV" not in analysis) and ("RHR" not in analysis) and ("체중" not in analysis):
+            analysis = f"{vitals_line} {analysis}".strip()
+
+        if sprint_progress:
+            if (pace == "behind") and (gap is not None) and (gap > 0):
+                if req is not None:
+                    sprint_line = (
+                        f"스프린트 Day {day_no} 기준 목표 대비 {gap:.2f}kg 뒤처져 있고, "
+                        f"남은 {days_left}일 동안 하루 {req:.2f}kg 페이스가 필요합니다."
+                    )
+                else:
+                    sprint_line = f"스프린트 Day {day_no} 기준 목표 대비 {gap:.2f}kg 뒤처진 상태입니다."
+            elif pace == "on-track":
+                sprint_line = f"스프린트 Day {day_no} 기준 현재는 유지 구간이며, 남은 {days_left}일 관리가 핵심입니다."
+            elif pace == "ahead":
+                sprint_line = f"스프린트 Day {day_no} 기준 현재는 앞선 구간이며, 남은 {days_left}일은 방어 관리가 핵심입니다."
+            else:
+                sprint_line = ""
+            if sprint_line and ("스프린트" not in analysis):
+                analysis = f"{analysis} {sprint_line}".strip()
+
+        if ("손해" not in analysis) and ("위험" not in analysis):
+            if (pace == "behind") and (gap is not None) and (gap > 0):
+                analysis = (
+                    f"{analysis} 지금 점심·저녁에서 탄수와 염분이 흔들리면 {gap:.2f}kg 격차가 내일 체중으로 고정될 손해가 있습니다."
+                ).strip()
+            else:
+                analysis = f"{analysis} 오늘 식사 리듬이 흔들리면 내일 체중 반등폭이 커지는 손해가 생길 수 있습니다.".strip()
+        if not _contains_positive_signal(analysis):
+            analysis = f"{analysis} 반대로 오늘 점심을 안정시키면 저녁 폭식과 붓기를 줄여 내일 수치 방어에 유리합니다.".strip()
+
+        workout = str(out.get("mission_workout", "") or "").strip()
+        diet = str(out.get("mission_diet", "") or "").strip()
+        recovery = str(out.get("mission_recovery", "") or "").strip()
+
+        if not _df_has_concrete_detail(workout):
+            if "Workday" in str(work_constraint):
+                workout = "퇴근 후 가능한 슬롯 1개를 고정해 20~30분 걷기 1회를 완료하세요. 슬롯이 없으면 귀가 후 10분 스트레칭으로 대체하세요."
+            else:
+                workout = "오전 또는 오후 여유 시간에 30~40분 유산소 1회를 먼저 끝내고, 남으면 10분 코어를 추가하세요."
+        if not _df_has_concrete_detail(diet):
+            diet = "점심은 단백질+채소 1끼로 고정하고 밥·면·튀김은 제외하세요. 저녁은 추가 탄수 없이 단백질 소량으로 마무리하세요."
+        if not _df_has_concrete_detail(recovery):
+            recovery = "오후에는 수분을 나눠서 총 300~500ml만 보충하고, 취침 30분 전 마그네슘 1정과 5분 스트레칭으로 회복 루틴을 고정하세요."
+
+        out["headline"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(headline)))
+        out["headline_reason"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(reason)))
+        out["analysis"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(analysis)))
+        out["mission_workout"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(workout)))
+        out["mission_diet"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(diet)))
+        out["mission_recovery"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(recovery)))
+        return out
+
     client = OpenAI(api_key=OPENAI_API_KEY)
     dt = datetime.strptime(date_key, '%Y-%m-%d')
     wc = "Workday(06-19 Work). No heavy gym during work." if dt.weekday() < 5 else "Weekend. Free."
+    sprint_progress = None
+    try:
+        sprint = get_active_sprint()
+        if sprint:
+            sprint_progress = calculate_sprint_progress(sprint, float(weight))
+    except Exception:
+        sprint_progress = None
+    sprint_ctx = {
+        "day": _safe_int((sprint_progress or {}).get("day"), 0),
+        "days_remaining": _safe_int((sprint_progress or {}).get("days_remaining"), 0),
+        "pace_status": str((sprint_progress or {}).get("pace_status", "") or ""),
+        "weight_delta": _safe_float((sprint_progress or {}).get("weight_delta"), None),
+        "required_daily_pace": _safe_float((sprint_progress or {}).get("required_daily_pace"), None),
+    }
+    sprint_ctx_json = json.dumps(sprint_ctx, ensure_ascii=False)
     persona_context = build_common_persona_context()
     north_star_context = build_north_star_context()
     korean_style_context = build_korean_style_context()
@@ -4482,10 +5497,17 @@ Data: {morning_context}
 Vitals: {date_key}, HRV:{hrv}, RHR:{rhr}, Wt:{weight}
 Schedule: {calendar_str}
 Constraint: {wc}
+SprintContext: {sprint_ctx_json}
 
 [출력 원칙]
 - 입력 사실과 모순되지 마십시오.
 - 해석과 코칭 표현은 자율적으로 구성하십시오.
+- analysis에는 현재 지표(HRV/RHR/체중 중 1개 이상)와 스프린트 맥락(격차/남은일/필요페이스 중 1개 이상)을 포함하십시오.
+- analysis에는 반드시 아래 2문장을 포함하십시오.
+  1) 지금 안 하면 생기는 손해
+  2) 지금 하면 좋아지는 점
+- mission_workout/mission_diet/mission_recovery는 각각 시간대/행동/분량 중 최소 2개를 담은 실행문으로 작성하십시오.
+- "관리하세요", "신경쓰세요", "준비하세요" 같은 모호한 문장만 단독으로 쓰지 마십시오.
 - json 객체 1개만 출력하십시오.
 
 Output JSON: {{
@@ -4504,17 +5526,21 @@ Output JSON: {{
             messages=[{"role":"user","content":prompt}],
             response_format={"type":"json_object"}
         )
-        return json.loads(res.choices[0].message.content)
+        raw = json.loads(res.choices[0].message.content)
+        return _normalize_daily_checkin_result(raw, sprint_progress, wc)
     except Exception as e:
-        return {
+        fallback = {
             "condition_signal": "Yellow",
-            "headline": "생성 오류",
-            "headline_reason": "모델/네트워크 오류로 생성 실패",
-            "analysis": str(e),
+            "headline": "생성 오류로 기본 코칭으로 전환했습니다.",
+            "headline_reason": "모델/네트워크 이슈",
+            "analysis": "AI 응답이 실패해 기본 규칙 기반 코칭으로 전환했습니다.",
             "mission_workout": "-",
             "mission_diet": "-",
             "mission_recovery": "-"
         }
+        if str(e):
+            fallback["analysis"] = f"{fallback['analysis']} 오류 메시지: {str(e)}"
+        return _normalize_daily_checkin_result(fallback, sprint_progress, wc)
 
 @st.cache_data(ttl=900)
 def ai_generate_action_plan_cached(hrv, rhr, weight, date_key, slots_key, activity_sig, today_activities, available_slots, plan_version, daily_five_sig):
@@ -4707,22 +5733,28 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 언어: 한국어 존댓말
 
 [섹션 목표]
-- Action Plan은 '속보'처럼 지금 시점 행동을 안내해야 합니다.
-- Daily Check-in의 큰 방향을 바탕으로, 지금 당장 실행 가능한 코칭을 만듭니다.
+- Action Plan은 현 시점 맥락(일정·피로·섭취·운동가능시간)에 맞는 우선순위 코칭을 안내해야 합니다.
+- Daily Check-in의 큰 방향을 바탕으로, 오늘 남은 시간에 실현 가능한 코칭을 만듭니다.
 - xC와 스프린트 마일스톤 달성 확률을 높이는 방향으로 제안합니다.
-- 응원, 독려, 경고 톤은 상황에 맞게 자율적으로 사용하십시오.
-- 이 섹션의 최우선 목적은 분석 전시가 아니라 행동 변화 유도입니다.
+- 응원/독려/경고 톤은 상황에 맞게 자율적으로 조절하십시오.
+- 최우선 목적은 분석 전시가 아니라 행동 변화 유도입니다.
 - persona_context의 캐릭터/말투/호칭 규칙을 일관되게 준수하십시오.
-- 번역투 대신 자연스러운 한국어 구어체 존댓말로 작성하십시오.
-- 불필요한 외래어(컨트롤, 패턴 등) 남용을 피하고 쉬운 한국어를 우선하십시오.
+- 번역투 대신 자연스러운 한국어 구어체 존댓말을 사용하십시오.
+- 모호한 표현(예: "자유 슬롯", "좀 더 준비", "건강한 메뉴")은 피하고, 구체적 표현을 사용하십시오.
+- 코칭은 반드시 "지금 사용자 상태"에 맞춰 작성하십시오(일정/섭취/운동여건/격차 반영).
+- 일반론을 금지합니다. 같은 조언이라도 "지금 이 사용자에게 생기는 손해/이득"을 연결해 설명하십시오.
+- 식사·음주 리스크가 이미 기록된 날에는 경고 강도를 높여도 됩니다. 단, 과도한 모욕·비난은 금지합니다.
+- next_actions는 고정 템플릿을 따르지 말고, 상황에 맞는 문장 구조를 자율적으로 선택하십시오.
+- '지금 당장' 실행 강요 문구를 남발하지 말고, 현 시점 판단 기준과 선택 이유를 함께 제시하십시오.
+- 가능하면 시간/행동/분량 중 2개 이상을 포함해 실행 가능성을 높이십시오.
 
 [최소 가드레일]
 - daily_state 사실과 모순되지 마십시오.
 - 캘린더 원문이 아니라 available_slots만 사실로 사용하십시오.
-- available_slots에서 active_now=true 슬롯이 없으면 '지금 당장 운동 시작' 제안을 하지 마십시오.
-- late_mode=true 또는 enabled 슬롯이 없으면 오늘 남은 시간의 마무리 행동만 제시하십시오.
-- dinner_done=true일 때 '저녁 차단' 대신 '추가 섭취 차단/야식 차단' 표현을 사용하십시오.
-- Action Plan에서는 내일/다음날 계획을 제시하지 말고, 오늘 남은 시간 행동만 제시하십시오.
+- available_slots에서 active_now=true 슬롯이 없으면 현재 불가능한 행동을 확정 지시하지 마십시오.
+- late_mode=true 또는 enabled 슬롯이 거의 없으면 무리한 플랜 대신 현실적 마무리 행동을 우선 제안하십시오.
+- dinner_done=true일 때는 '저녁 식사' 지시보다 '추가 섭취/야식 관리' 중심으로 제안하십시오.
+- 내일/다음날 계획 자체를 금지하지는 않되, 오늘 판단·행동을 우선으로 두십시오.
 - 운동 유형은 하드코딩된 코드/템플릿 대신 캘린더와 오늘 로그를 근거로 자율 제안하십시오.
 - json 객체 1개만 출력하십시오.
 
@@ -4774,7 +5806,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 [OUTPUT FORMAT - JSON]
 {{
   "current_analysis": "현재 상황 해석 (1~3문장)",
-  "next_actions": "즉시 실행 가능한 코칭 본문. 여러 줄 가능.",
+  "next_actions": "현 시점 맞춤 코칭 본문. 여러 줄 가능.",
   "warnings": "리스크/경고가 있으면 작성, 없으면 빈 문자열"
 }}
 """
@@ -4900,6 +5932,37 @@ def _pitwall_compact_context(consult_context):
     return ctx
 
 
+def _normalize_pitwall_reply_text(coach_reply, consult_context):
+    txt = str(coach_reply or "").strip()
+    if not txt:
+        return "오늘 상태 기준으로 핵심 1개만 먼저 고르고, 실행 조건(시간·분량)을 붙여 확정해 주세요."
+
+    ctx = dict(consult_context or {})
+    daily_state = dict(ctx.get("daily_state", {}) or {})
+    sprint_progress = dict(ctx.get("sprint_progress", {}) or {})
+    if sprint_progress:
+        daily_state["sprint"] = sprint_progress
+
+    txt = _rewrite_vague_korean(_dedupe_consecutive_sentences(txt))
+    lines = [ln.strip() for ln in str(txt).splitlines() if str(ln).strip()]
+    if not lines:
+        lines = [txt]
+
+    dedup = []
+    seen = set()
+    for ln in lines:
+        k = re.sub(r"\s+", " ", str(ln).strip()).lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        dedup.append(polish_korean_coaching_text(str(ln).strip()))
+
+    if not any(_is_action_oriented_text(ln) for ln in dedup):
+        dedup.append(build_forced_next_action_from_state(daily_state))
+
+    return "\n".join(dedup[:8]).strip()
+
+
 def invalidate_dailyfive_local_cache(date_key, sprint_id):
     try:
         cache_file = os.path.join(CACHE_DIR, f"dailyfive_{date_key}_{sprint_id}.json")
@@ -4915,6 +5978,7 @@ def build_pitwall_consult_context(date_key, context_nonce="0"):
         "date_key": str(date_key),
         "now_kst": get_current_kst().strftime("%Y-%m-%d %H:%M:%S"),
         "sprint": {},
+        "sprint_progress": {},
         "daily_state": {},
         "daily_five_focus": {},
         "daily_five_tasks": [],
@@ -4958,6 +6022,14 @@ def build_pitwall_consult_context(date_key, context_nonce="0"):
             progress = calculate_sprint_progress(sprint, weight)
     except Exception:
         progress = None
+    if progress:
+        out["sprint_progress"] = {
+            "day": _safe_int(progress.get("day"), 0),
+            "days_remaining": _safe_int(progress.get("days_remaining"), 0),
+            "pace_status": str(progress.get("pace_status", "") or ""),
+            "weight_delta": _safe_float(progress.get("weight_delta"), None),
+            "required_daily_pace": _safe_float(progress.get("required_daily_pace"), None),
+        }
 
     cal_evts = get_today_calendar_events(str(date_key))
     slots = build_available_slots(str(date_key), cal_evts)
@@ -5081,7 +6153,11 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
 [목표]
 - 사용자의 질문에 대해 실질적인 행동 변화를 유도하는 코칭을 제공합니다.
 - 과도한 서론 없이 핵심만 짧고 강하게 답합니다.
-- 마지막 줄은 반드시 '지금 할 1개:'로 시작해 즉시 행동 1개만 제시하십시오.
+- 답변은 현재 사용자의 스프린트/컨디션 맥락을 반영해 작성하십시오.
+- 지시문만 나열하지 말고, 해석 + 우선순위 + 근거가 자연스럽게 드러나게 작성하십시오.
+- 고정 템플릿을 강제하지 않습니다. 다만 문장은 구체적이고 실행 가능해야 합니다.
+- 일반론/상투문구를 금지합니다. 반드시 현재 사용자 상태와 연결해 설명하십시오.
+- 필요 시 단호한 톤을 사용해도 되지만, 모욕적 표현은 금지합니다.
 
 [대화 이력]
 {history_text}
@@ -5099,7 +6175,8 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
             )
             coach_reply = str(response.choices[0].message.content or "").strip()
             if not coach_reply:
-                coach_reply = "지금 할 1개: 오늘 남은 DF 항목 중 최우선 1개를 20분 안에 바로 실행해 주세요."
+                coach_reply = "오늘 남은 DF 항목 중 최우선 1개를 먼저 확정하고, 가능한 시간대에 20분 단위로 마무리해 주세요."
+            coach_reply = _normalize_pitwall_reply_text(coach_reply, compact_context)
             return {"coach_reply": coach_reply, "plan_patch": {"enabled": False, "changes": []}}
 
         prompt = f"""
@@ -5167,6 +6244,7 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
     coach_reply = str(result.get("coach_reply", "") or "").strip()
     if not coach_reply:
         coach_reply = "현재 데이터 기준으로 계획 조정이 필요합니다. 아래 수정안을 검토해 주세요."
+    coach_reply = _normalize_pitwall_reply_text(coach_reply, compact_context)
 
     raw_patch = result.get("plan_patch", {}) or {}
     patch_date = str(raw_patch.get("date_key", "") or str((consult_context or {}).get("date_key", get_mission_date_key())))
@@ -5817,7 +6895,7 @@ def build_rule_based_wrapup(kind, payload):
         if meals <= 1:
             critique = "식사 기록이 너무 적어 실제 섭취가 과소평가될 가능성이 큽니다. 기록 정확도를 먼저 복구하십시오."
         elif workouts <= 0:
-            critique = "오늘 행동 변화가 충분하지 않았습니다. 일정 탓보다 실행 우선순위 배치가 문제였습니다."
+            critique = "오늘은 실행 여건이 부족해 행동량이 낮게 반영됐습니다. 내일은 일정 안에서 우선순위 1개만 먼저 고정하는 방식이 유리합니다."
         else:
             critique = "실행은 있었지만 강도 또는 일관성이 목표 대비 부족할 수 있습니다."
 
@@ -6053,7 +7131,7 @@ def render_wrapup_block(kind, wrapup, xc=None):
         unsafe_allow_html=True,
     )
     if xc and (xc.get("xc_value_kg") is not None):
-        st.caption(f"xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.2f}kg")
+        st.caption(format_xc_caption_text(xc.get("xc_value_kg")))
 
     with st.container(border=True):
         st.markdown(f"**종합 평가:** {wrapup.get('overview', '-')}")
@@ -6994,9 +8072,12 @@ with tab1:
                 with st.container(border=True):
                     st.markdown(f"""<h3 style="margin-bottom: 10px;">Action Plan <span class="time-badge">{ap.get('generated_at', now_kst.strftime('%H:%M'))} 기준</span></h3>""", unsafe_allow_html=True)
                     if xc and (xc.get("xc_value_kg") is not None):
-                        st.caption(f"xC(오늘 기대 변화량): {float(xc.get('xc_value_kg')):.2f}kg")
-                    st.markdown(f"**지금 상황:** {ap.get('current_analysis', '')}")
-                    st.markdown(f"**지금 할 일:**\n{ap.get('next_actions', '').replace(chr(10), chr(10)*2)}")
+                        st.caption(format_xc_caption_text(xc.get("xc_value_kg")))
+                    st.markdown("**지금 상황**")
+                    st.markdown(format_coaching_readability_markdown(ap.get("current_analysis", "")))
+                    st.markdown("")
+                    st.markdown("**현 시점 제안**")
+                    st.markdown(format_coaching_readability_markdown(ap.get("next_actions", "")))
                     if ap.get('warnings'):
                         st.error(f"⚠️ {ap['warnings']}")
         else:
@@ -7192,9 +8273,9 @@ with tab2:
                             st.caption(f"📏 기계식 페이스 {linear_expected:.2f}kg")
 
                             if xc_value is not None:
-                                st.caption(f"xC(오늘 기대 변화량) {xc_value:.2f}kg")
+                                st.caption(format_xc_caption_text(xc_value))
                             else:
-                                st.caption("xC 계산값 없음")
+                                st.caption("xC 참고값 없음")
 
 
                     st.markdown("""<h3 style="margin-bottom: 10px;">Sprint: Daily Five <span class="time-badge">05:00 생성</span></h3>""", unsafe_allow_html=True)
@@ -7283,17 +8364,6 @@ with tab2:
 
                     else:
                         st.warning("데일리 파이브 생성 실패")
-
-                    st.divider()
-
-                    st.markdown("### 앞으로의 계획")
-                    st.caption("현재 페이스 유지 시 예상")
-
-                    with st.expander("내일 예상"):
-                        st.info("내일 아침 5시에 생성됩니다")
-
-                    with st.expander("모레 예상"):
-                        st.info("모레 아침 5시에 생성됩니다")
 
         except Exception as e:
             st.error(f"Error: {e}")
@@ -7648,7 +8718,7 @@ with tab5:
     q3, q4 = st.columns(2)
     with q3:
         if st.button("위기 모드", width="stretch", key="pit_quick_crisis"):
-            _pit_submit_message("지금 페이스가 무너진 기준으로 강하게 경고하고 즉시 행동 1개를 제시해 주세요.")
+            _pit_submit_message("현재 페이스가 무너진 기준으로 강하게 경고하고 현 시점 우선 행동 1개를 제시해 주세요.")
     with q4:
         if st.button("계획 패치 제안", width="stretch", key="pit_quick_patch"):
             _pit_submit_message("오늘 Daily Five task_1~task_5 수정안을 JSON patch로 제시해 주세요.")
