@@ -4767,6 +4767,86 @@ def _build_personalized_gain_line(daily_state):
     return "오늘 이득: 지금 선택을 단순화하면 내일 체중과 컨디션을 동시에 안정적으로 가져갈 수 있습니다."
 
 
+def _build_critical_now_line(daily_state):
+    state = daily_state or {}
+    sprint = state.get("sprint", {}) or {}
+    intake = state.get("intake_today", {}) or {}
+    workout = state.get("workout_done", {}) or {}
+    cal = state.get("calendar_flags", {}) or {}
+    _food_risk_fn = globals().get("_detect_today_food_risk", lambda _s: {"has_high": False, "high_hits": []})
+    _alcohol_risk_fn = globals().get("_detect_today_alcohol_risk", lambda _s: {"has_alcohol": False})
+    food_risk = _food_risk_fn(state)
+    alcohol_risk = _alcohol_risk_fn(state)
+    slots = list(state.get("available_slots", []) or [])
+
+    now_txt = ""
+    try:
+        now_iso = str(state.get("now_kst", "") or "").strip()
+        if now_iso:
+            now_dt = datetime.fromisoformat(now_iso)
+            now_txt = now_dt.strftime("%H:%M")
+    except Exception:
+        now_txt = ""
+
+    pace = str(sprint.get("pace_status", "") or "").strip().lower()
+    gap = _safe_float(sprint.get("weight_delta"), None)
+    req = _safe_float(sprint.get("required_daily_pace"), None)
+    days_left = _safe_int(sprint.get("days_remaining"), 0)
+    kcal_now = _safe_int(intake.get("kcal_est_today", 0), 0)
+    kcal_target = _safe_int(intake.get("kcal_target_today", DEFAULT_DAILY_KCAL_TARGET), DEFAULT_DAILY_KCAL_TARGET)
+    worked = bool(workout.get("worked_out_today", False))
+    dinner_workout = bool(cal.get("dinner_workout_scheduled", False))
+    high_hits = list(food_risk.get("high_hits", []) or [])
+    has_high_food = bool(food_risk.get("has_high", False))
+    has_alcohol = bool(alcohol_risk.get("has_alcohol", False))
+
+    evening_slot = next((s for s in slots if str(s.get("slot_id", "")) == "evening_window"), None)
+    ev_start = str((evening_slot or {}).get("start", "") or "19:00")
+    ev_end = str((evening_slot or {}).get("end", "") or "23:59")
+
+    prefix = f"핵심: {now_txt} 기준, " if now_txt else "핵심: "
+    kcal_part = f"현재 섭취 {kcal_now}kcal(목표 {kcal_target}kcal)" if kcal_target > 0 else f"현재 섭취 {kcal_now}kcal"
+    if has_alcohol:
+        risk_part = "오늘 음주가 이미 기록되어 반등 위험이 높습니다."
+    elif has_high_food:
+        kw = ", ".join(high_hits[:2]) if high_hits else "고열량 섭취"
+        risk_part = f"오늘 {kw}가 이미 들어간 상태입니다."
+    else:
+        risk_part = ""
+
+    if dinner_workout and (not worked):
+        risk_prefix = f"{risk_part} " if risk_part else ""
+        if (pace == "behind") and (req is not None):
+            return (
+                f"{prefix}{risk_prefix}저녁 {ev_start}~{ev_end} 운동 일정이 이미 잡혀 있습니다. "
+                f"이 세션을 미실행하면 남은 {days_left}일 필요 페이스가 {req:.2f}kg/일로 더 가팔라집니다. "
+                f"{kcal_part}라서 저녁은 보정식 중심이 유리합니다."
+            )
+        return (
+            f"{prefix}{risk_prefix}저녁 {ev_start}~{ev_end} 운동 일정이 이미 잡혀 있습니다. "
+            f"오늘 결과는 이 세션 실행 여부가 거의 결정합니다. {kcal_part}라 저녁은 과식 방어가 핵심입니다."
+        )
+
+    if (pace == "behind") and (gap is not None) and (req is not None):
+        risk_prefix = f"{risk_part} " if risk_part else ""
+        return (
+            f"{prefix}{risk_prefix}현재 {gap:.2f}kg 뒤처짐 상태이며 남은 {days_left}일 필요 페이스는 {req:.2f}kg/일입니다. "
+            f"지금 선택이 그대로 내일 격차로 고정될 수 있습니다."
+        )
+
+    if not worked:
+        risk_prefix = f"{risk_part} " if risk_part else ""
+        return (
+            f"{prefix}{risk_prefix}오늘 운동 기록이 아직 0회입니다. "
+            f"지금 한 세션을 채우지 않으면 체중보다 먼저 수면·피로 지표가 흔들릴 가능성이 큽니다."
+        )
+
+    risk_prefix = f"{risk_part} " if risk_part else ""
+    return (
+        f"{prefix}{risk_prefix}오늘 기록 흐름은 유지 중이지만 {kcal_part} 기준에서 저녁 선택이 내일 체중 변동폭을 좌우합니다."
+    )
+
+
 def validate_action_plan_output(result, daily_state):
     if not isinstance(result, dict):
         return result
@@ -4778,14 +4858,37 @@ def validate_action_plan_output(result, daily_state):
     _polish = globals().get("polish_korean_coaching_text", lambda t: str(t or ""))
     _dedupe_sent = globals().get("_dedupe_consecutive_sentences", lambda t: str(t or ""))
     _warn_norm = globals().get("_normalize_warning_text", lambda w, _s: str(w or ""))
+    _critical_now = globals().get("_build_critical_now_line", lambda _s: "")
+    _loss_gain = globals().get("_build_now_loss_gain_hint", lambda _s: ("", ""))
+    _state_snapshot = globals().get("_build_state_snapshot_line", lambda _s: "")
+    _context_why = globals().get("_build_contextual_why_line", lambda _s: "")
+    _forced_next = globals().get("build_forced_next_action_from_state", lambda _s: "")
+    _blocking_line = globals().get("_build_personalized_blocking_line", lambda _s: "")
+    _gain_line = globals().get("_build_personalized_gain_line", lambda _s: "")
+    _evidence_gate = globals().get("_enforce_evidence_quality", lambda _t, _s: True)
+    _tone_downgrade = globals().get("_downgrade_false_positive_tone", lambda _t, _s: str(_t or ""))
 
     text = str(result.get("next_actions", "") or "")
     warns = str(result.get("warnings", "") or "")
     analysis = str(result.get("current_analysis", "") or "")
+    cal = (daily_state or {}).get("calendar_flags", {}) or {}
+    dinner_workout = bool(cal.get("dinner_workout_scheduled", False))
+    slots = list((daily_state or {}).get("available_slots", []) or [])
+    evening_slot = next((s for s in slots if str(s.get("slot_id", "")) == "evening_window"), None)
+    ev_start = str((evening_slot or {}).get("start", "") or "19:00")
+    ev_end = str((evening_slot or {}).get("end", "") or "23:59")
+    worked = bool(((daily_state or {}).get("workout_done", {}) or {}).get("worked_out_today", False))
 
     text = text.replace("초저녁", "저녁")
     warns = warns.replace("초저녁", "저녁")
     analysis = analysis.replace("초저녁", "저녁")
+
+    # 저녁 운동 일정이 있는 날의 어색/모순 문구 제거
+    if dinner_workout:
+        analysis = re.sub(r"오늘은 저녁 일정이 있어 저녁 시간대 [^\.!\n]*(?:[\.!]|$)", " ", analysis)
+        analysis = re.sub(r"또한 운동이 필요하며, 오늘은 저녁에 운동 계획이 있습니다\.?", " ", analysis)
+        text = re.sub(r"오늘은 저녁 일정이 있어 저녁 시간대 [^\.!\n]*(?:[\.!]|$)", " ", text)
+        text = re.sub(r"저녁 운동 슬롯에 맞춰 계획된 운동을 진행하도록 준비해 주세요\.?", " ", text)
 
     text = _sanitize_plan_lines(text)
     text = "\n".join(_dedupe_sent(x) for x in str(text).splitlines() if str(x).strip()).strip()
@@ -4795,12 +4898,60 @@ def validate_action_plan_output(result, daily_state):
     text = _apply_guard(text, daily_state)
 
     analysis = _rewrite_vague(analysis)
+    analysis = _tone_downgrade(analysis, daily_state)
     text = _rewrite_vague(text)
     if not text.strip():
         text = "오늘 남은 시간 기준으로 가장 현실적인 핵심 1개를 먼저 정하고, 실행 조건(시간·장소·분량)을 붙여 확정하세요."
     warns = _rewrite_vague(warns)
     warns = _warn_norm(warns, daily_state)
     warns = _dedupe_sent(warns)
+
+    critical_line = str(_critical_now(daily_state) or "").strip()
+    snapshot_line = str(_state_snapshot(daily_state) or "").strip()
+    why_line = str(_context_why(daily_state) or "").strip()
+    forced_next_line = str(_forced_next(daily_state) or "").strip()
+
+    if snapshot_line and ("현재 상태 요약:" not in analysis):
+        analysis = f"{snapshot_line}\n{analysis}".strip()
+
+    if critical_line:
+        if "핵심:" not in analysis:
+            analysis = f"{critical_line}\n{analysis}".strip()
+        elif critical_line not in analysis:
+            analysis = f"{critical_line}\n{analysis}".strip()
+
+    # 일반론 출력이 들어와도 개인화 근거 문장을 보강
+    if not _evidence_gate(analysis, daily_state):
+        blocks = [x for x in [critical_line, snapshot_line, analysis] if str(x or "").strip()]
+        analysis = "\n".join(blocks).strip()
+
+    # 저녁 운동 일정이 잡힌 날에는 "현 시점 우선 1개"를 강제 주입
+    if dinner_workout and (not worked):
+        forced_now = (
+            f"현 시점 우선 1개: 저녁 {ev_start}~{ev_end} 캘린더 운동 세션을 반드시 실행하세요. "
+            "오늘은 추가 계획을 늘리지 말고 이 세션 완료 여부로 하루를 판정합니다."
+        )
+        if "현 시점 우선 1개:" not in text:
+            text = f"{forced_now}\n{text}".strip()
+    elif forced_next_line and ("현 시점 우선 1개:" not in text):
+        text = f"{forced_next_line}\n{text}".strip()
+
+    if why_line and ("왜 이걸 우선하냐면:" not in text):
+        text = f"{text}\n{why_line}".strip()
+
+    loss_line, gain_line = _loss_gain(daily_state)
+    loss_line = str(loss_line or "").strip()
+    gain_line = str(gain_line or "").strip()
+    p_loss_line = str(_blocking_line(daily_state) or "").strip()
+    p_gain_line = str(_gain_line(daily_state) or "").strip()
+    if p_loss_line and ("오늘 방어선:" not in text):
+        text = f"{text}\n{p_loss_line}".strip()
+    elif loss_line and ("오늘 방어선:" not in text):
+        text = f"{text}\n{loss_line}".strip()
+    if p_gain_line and ("오늘 이득:" not in text):
+        text = f"{text}\n{p_gain_line}".strip()
+    elif gain_line and ("오늘 이득:" not in text):
+        text = f"{text}\n{gain_line}".strip()
 
     result["current_analysis"] = _polish(_humanize(analysis))
     result["next_actions"] = _polish(_humanize(text))
