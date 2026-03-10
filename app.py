@@ -3642,6 +3642,7 @@ def extract_calendar_flags(date_key, cal_evts):
     dinner_tag = False
     lunch_workout = False
     dinner_workout = False
+    dinner_workout_times = []
 
     all_events = []
     for _, ev_list in (cal_evts or {}).items():
@@ -3663,6 +3664,10 @@ def extract_calendar_flags(date_key, cal_evts):
             if _overlaps(es, ee, dinner_start, dinner_end):
                 if is_workout:
                     dinner_workout = True
+                    clip_start = max(es, dinner_start)
+                    clip_end = min(ee, dinner_end)
+                    if clip_start < clip_end:
+                        dinner_workout_times.append((clip_start, clip_end))
                 dinner_overlap = True
 
         if ("점심" in title_compact) or ("점:" in title_compact) or title_compact.startswith("점"):
@@ -3676,11 +3681,23 @@ def extract_calendar_flags(date_key, cal_evts):
             else:
                 dinner_tag = True
 
+    dinner_workout_start = None
+    dinner_workout_end = None
+    if dinner_workout_times:
+        try:
+            dinner_workout_start = min(x[0] for x in dinner_workout_times).strftime("%H:%M")
+            dinner_workout_end = max(x[1] for x in dinner_workout_times).strftime("%H:%M")
+        except Exception:
+            dinner_workout_start = None
+            dinner_workout_end = None
+
     return {
         "lunch_appointment": bool((lunch_overlap or lunch_tag) and (not lunch_workout)),
         "dinner_appointment": bool((dinner_overlap or dinner_tag) and (not dinner_workout)),
         "lunch_workout_scheduled": bool(lunch_workout),
         "dinner_workout_scheduled": bool(dinner_workout),
+        "dinner_workout_start": dinner_workout_start,
+        "dinner_workout_end": dinner_workout_end,
     }
 
 
@@ -4799,8 +4816,8 @@ def _build_critical_now_line(daily_state):
     has_alcohol = bool(alcohol_risk.get("has_alcohol", False))
 
     evening_slot = next((s for s in slots if str(s.get("slot_id", "")) == "evening_window"), None)
-    ev_start = str((evening_slot or {}).get("start", "") or "19:00")
-    ev_end = str((evening_slot or {}).get("end", "") or "23:59")
+    ev_start = str(cal.get("dinner_workout_start") or str((evening_slot or {}).get("start", "") or "19:00"))
+    ev_end = str(cal.get("dinner_workout_end") or str((evening_slot or {}).get("end", "") or "23:59"))
 
     prefix = "핵심: "
     kcal_part = f"현재 섭취 {kcal_now}kcal(목표 {kcal_target}kcal)" if kcal_target > 0 else f"현재 섭취 {kcal_now}kcal"
@@ -4873,8 +4890,8 @@ def validate_action_plan_output(result, daily_state):
     dinner_workout = bool(cal.get("dinner_workout_scheduled", False))
     slots = list((daily_state or {}).get("available_slots", []) or [])
     evening_slot = next((s for s in slots if str(s.get("slot_id", "")) == "evening_window"), None)
-    ev_start = str((evening_slot or {}).get("start", "") or "19:00")
-    ev_end = str((evening_slot or {}).get("end", "") or "23:59")
+    ev_start = str(cal.get("dinner_workout_start") or str((evening_slot or {}).get("start", "") or "19:00"))
+    ev_end = str(cal.get("dinner_workout_end") or str((evening_slot or {}).get("end", "") or "23:59"))
     worked = bool(((daily_state or {}).get("workout_done", {}) or {}).get("worked_out_today", False))
 
     text = text.replace("초저녁", "저녁")
@@ -4950,6 +4967,13 @@ def validate_action_plan_output(result, daily_state):
         text = f"{text}\n{p_gain_line}".strip()
     elif gain_line and ("오늘 이득:" not in text):
         text = f"{text}\n{gain_line}".strip()
+
+    # 저녁 운동 강제 라인이 들어간 날에는 중복 설명 문장을 강하게 제거
+    if dinner_workout and ("현 시점 우선 1개:" in text):
+        text = re.sub(r"오늘 저녁에 운동 일정이 이미 잡혀 있어[^\.!\n]*(?:[\.!]|$)", " ", text)
+        text = re.sub(r"저녁 운동을\s*\d{1,2}:\d{2}\s*이후에[^\.!\n]*(?:[\.!]|$)", " ", text)
+        text = re.sub(r"해당 세션 실행 중심으로 운영하면 됩니다\.?", " ", text)
+        text = re.sub(r"\s{2,}", " ", text).strip()
 
     # 최종 출력 직전 중복/시간표기 재정리
     analysis = _sanitize_plan_lines(analysis)
