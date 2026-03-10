@@ -4070,8 +4070,14 @@ def _sanitize_plan_lines(text):
         if not line:
             continue
         line = re.sub(r"\s+", " ", line)
+        line = re.sub(r"(\d{1,2})\s*:\s*(\d{2})", r"\1:\2", line)
+        line = re.sub(r"\s*~\s*", "~", line)
+        line = re.sub(r"\s{2,}", " ", line).strip()
 
         key = line.lower()
+        key = re.sub(r"(\d{1,2})\s*:\s*(\d{2})", r"\1:\2", key)
+        key = re.sub(r"\s*~\s*", "~", key)
+        key = re.sub(r"\s+", " ", key).strip()
         if key in seen:
             continue
         seen.add(key)
@@ -4779,14 +4785,6 @@ def _build_critical_now_line(daily_state):
     alcohol_risk = _alcohol_risk_fn(state)
     slots = list(state.get("available_slots", []) or [])
 
-    now_txt = ""
-    try:
-        now_iso = str(state.get("now_kst", "") or "").strip()
-        if now_iso:
-            now_dt = datetime.fromisoformat(now_iso)
-            now_txt = now_dt.strftime("%H:%M")
-    except Exception:
-        now_txt = ""
 
     pace = str(sprint.get("pace_status", "") or "").strip().lower()
     gap = _safe_float(sprint.get("weight_delta"), None)
@@ -4804,13 +4802,13 @@ def _build_critical_now_line(daily_state):
     ev_start = str((evening_slot or {}).get("start", "") or "19:00")
     ev_end = str((evening_slot or {}).get("end", "") or "23:59")
 
-    prefix = f"핵심: {now_txt} 기준, " if now_txt else "핵심: "
+    prefix = "핵심: "
     kcal_part = f"현재 섭취 {kcal_now}kcal(목표 {kcal_target}kcal)" if kcal_target > 0 else f"현재 섭취 {kcal_now}kcal"
     if has_alcohol:
         risk_part = "오늘 음주가 이미 기록되어 반등 위험이 높습니다."
     elif has_high_food:
         kw = ", ".join(high_hits[:2]) if high_hits else "고열량 섭취"
-        risk_part = f"오늘 {kw}가 이미 들어간 상태입니다."
+        risk_part = f"오늘 '{kw}' 섭취가 이미 들어간 상태입니다."
     else:
         risk_part = ""
 
@@ -4953,6 +4951,10 @@ def validate_action_plan_output(result, daily_state):
     elif gain_line and ("오늘 이득:" not in text):
         text = f"{text}\n{gain_line}".strip()
 
+    # 최종 출력 직전 중복/시간표기 재정리
+    analysis = _sanitize_plan_lines(analysis)
+    text = _sanitize_plan_lines(text)
+
     result["current_analysis"] = _polish(_humanize(analysis))
     result["next_actions"] = _polish(_humanize(text))
     result["warnings"] = _polish(warns.strip())
@@ -5017,6 +5019,8 @@ def format_coaching_readability_markdown(text):
     ]
 
     normalized = src
+    normalized = re.sub(r"(\d{1,2})\s*:\s*(\d{2})", r"\1:\2", normalized)
+    normalized = re.sub(r"\s*~\s*", "~", normalized)
     # 특정 헤딩 토큰은 문장 중간에 있어도 강제로 줄 분리
     for token in heading_tokens:
         normalized = re.sub(
@@ -5046,7 +5050,7 @@ def format_coaching_readability_markdown(text):
             head = head.strip()
             body = body.strip()
             # 너무 긴 문장까지 헤딩 처리하지 않도록 제한
-            if (1 <= len(head) <= 24) and re.search(r"[가-힣A-Za-z]", head):
+            if (1 <= len(head) <= 24) and re.search(r"[가-힣A-Za-z]", head) and (not re.search(r"\d", head)):
                 if body:
                     lines.append(f"- **{head}:** {body}")
                 else:
