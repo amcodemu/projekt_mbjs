@@ -5269,6 +5269,67 @@ def _extract_json_object_text(raw_text):
     return m.group(0).strip() if m else ""
 
 
+def _extract_json_codeblock_text(raw_text):
+    txt = str(raw_text or "").strip()
+    if not txt:
+        return ""
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", txt, flags=re.IGNORECASE)
+    return (m.group(1) or "").strip() if m else ""
+
+
+def _extract_balanced_json_object_text(raw_text):
+    s = str(raw_text or "")
+    if not s:
+        return ""
+    start = s.find("{")
+    if start < 0:
+        return ""
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(s)):
+        ch = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == "\"":
+                in_str = False
+            continue
+        if ch == "\"":
+            in_str = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start:i + 1].strip()
+    return ""
+
+
+def _parse_json_object_from_ai_text(raw_text):
+    txt = str(raw_text or "").strip()
+    if not txt:
+        return None
+
+    candidates = _unique_keep_order([
+        txt,
+        _extract_json_codeblock_text(txt),
+        _extract_balanced_json_object_text(txt),
+        _extract_json_object_text(txt),
+    ])
+    for c in candidates:
+        try:
+            obj = json.loads(c)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            continue
+    return None
+
+
 def _resolve_provider(provider=None):
     p = str(provider or COACHING_PROVIDER or "anthropic").strip().lower()
     if p not in {"openai", "anthropic"}:
@@ -5343,10 +5404,30 @@ def _coaching_json_completion(
             max_tokens=max_tokens,
             temperature=temperature,
         )
-        obj_txt = _extract_json_object_text(raw)
-        if not obj_txt:
-            raise RuntimeError("Claude response did not contain JSON object")
-        return json.loads(obj_txt)
+        parsed = _parse_json_object_from_ai_text(raw)
+        if parsed is not None:
+            return parsed
+
+        # 1회 자동 복구: Claude가 JSON 외 텍스트를 섞어 보낸 경우 JSON만 재생성
+        repair_prompt = f"""
+아래 텍스트를 의미 손실 없이 JSON object 1개로만 다시 작성하세요.
+- 설명문/코드펜스/추가 텍스트 금지
+- 최상위는 반드시 {{ ... }} 객체
+
+원문:
+{raw}
+"""
+        raw2 = _coaching_text_completion(
+            prompt=repair_prompt,
+            provider="anthropic",
+            model_anthropic=model_anthropic or COACHING_MODEL_ANTHROPIC,
+            max_tokens=min(int(max_tokens), 700),
+            temperature=0.0,
+        )
+        parsed2 = _parse_json_object_from_ai_text(raw2)
+        if parsed2 is not None:
+            return parsed2
+        raise RuntimeError("Claude response did not contain JSON object")
 
     if not OPENAI_API_KEY:
         raise RuntimeError("OpenAI API key is missing")
@@ -5383,10 +5464,10 @@ def _action_plan_chat_completion_json(prompt):
             if t:
                 parts.append(str(t))
         raw = "\n".join(parts).strip()
-        obj_txt = _extract_json_object_text(raw)
-        if not obj_txt:
-            raise RuntimeError("Claude response did not contain JSON object")
-        return json.loads(obj_txt)
+        parsed = _parse_json_object_from_ai_text(raw)
+        if parsed is not None:
+            return parsed
+        raise RuntimeError("Claude response did not contain JSON object")
 
     client = OpenAI(api_key=OPENAI_API_KEY)
     response = client.chat.completions.create(
