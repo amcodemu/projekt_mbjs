@@ -1,9 +1,15 @@
-streamlit
-pandas
-gspread
-oauth2client
-openai
-altair
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
+streamlit # 웹 앱 프레임워크
+pandas # 데이터 처리
+gspread # 구글 시트 연동
+oauth2client # 구글 인증 (구버전)
+openai # 오픈 AI API
+pillow # 이미지(EXIF) 처리
+pillow-heif # HEIC/HEIF 지원
+toml # Python<=3.10 secrets.toml 파싱 fallback
+google-auth # 서비스 계정 인증
+altair # 차트 시각화
+google-api-python-client # 구글 API 클라이언트
+google-auth-httplib2 # 구글 인증 (신버전)
+google-auth-oauthlib # 구글 OAUTH
+
+anthropic # Claude API

@@ -297,8 +297,10 @@ def save_checkin_cache(date_key, data):
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
         cache_file = os.path.join(CACHE_DIR, f"checkin_{date_key}.json")
+        payload = dict(data or {})
+        payload["_style_version"] = CHECKIN_STYLE_VERSION
         with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False, indent=2)
         return True
     except:
         return False
@@ -308,7 +310,10 @@ def load_checkin_cache(date_key):
         cache_file = os.path.join(CACHE_DIR, f"checkin_{date_key}.json")
         if os.path.exists(cache_file):
             with open(cache_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+                if str((data or {}).get("_style_version", "")) != CHECKIN_STYLE_VERSION:
+                    return None
+                return data
         return None
     except:
         return None
@@ -316,18 +321,20 @@ def load_checkin_cache(date_key):
 
 def save_dailyfive_cache(date_key, sprint_id, data):
     local_ok = False
+    payload = dict(data or {})
+    payload["_style_version"] = DAILY_FIVE_STYLE_VERSION
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
         cache_file = os.path.join(CACHE_DIR, f"dailyfive_{date_key}_{sprint_id}.json")
         with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False, indent=2)
         local_ok = True
     except:
         local_ok = False
 
     sheet_ok = False
     try:
-        sheet_ok = persist_dailyfive_to_sheet(date_key, sprint_id, data)
+        sheet_ok = persist_dailyfive_to_sheet(date_key, sprint_id, payload)
     except:
         sheet_ok = False
 
@@ -338,7 +345,10 @@ def load_dailyfive_cache(date_key, sprint_id):
         cache_file = os.path.join(CACHE_DIR, f"dailyfive_{date_key}_{sprint_id}.json")
         if os.path.exists(cache_file):
             with open(cache_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+                if str((data or {}).get("_style_version", "")) != DAILY_FIVE_STYLE_VERSION:
+                    return None
+                return data
     except:
         pass
 
@@ -346,6 +356,8 @@ def load_dailyfive_cache(date_key, sprint_id):
     try:
         from_sheet = load_dailyfive_from_sheet(date_key, sprint_id)
         if from_sheet:
+            if str((from_sheet or {}).get("_style_version", "")) != DAILY_FIVE_STYLE_VERSION:
+                return None
             try:
                 os.makedirs(CACHE_DIR, exist_ok=True)
                 cache_file = os.path.join(CACHE_DIR, f"dailyfive_{date_key}_{sprint_id}.json")
@@ -483,6 +495,67 @@ if "OPENAI_API_KEY" in st.secrets:
 else:
     OPENAI_API_KEY = ""
 
+if "ANTHROPIC_API_KEY" in st.secrets:
+    ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
+else:
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+try:
+    ACTION_PLAN_PROVIDER = str(
+        st.secrets.get("ACTION_PLAN_PROVIDER", os.getenv("ACTION_PLAN_PROVIDER", "openai"))
+        or "openai"
+    ).strip().lower()
+except Exception:
+    ACTION_PLAN_PROVIDER = str(os.getenv("ACTION_PLAN_PROVIDER", "openai") or "openai").strip().lower()
+if ACTION_PLAN_PROVIDER not in {"openai", "anthropic"}:
+    ACTION_PLAN_PROVIDER = "openai"
+
+try:
+    ACTION_PLAN_MODEL_OPENAI = str(
+        st.secrets.get("ACTION_PLAN_MODEL_OPENAI", os.getenv("ACTION_PLAN_MODEL_OPENAI", "gpt-4o"))
+        or "gpt-4o"
+    ).strip()
+except Exception:
+    ACTION_PLAN_MODEL_OPENAI = str(os.getenv("ACTION_PLAN_MODEL_OPENAI", "gpt-4o") or "gpt-4o").strip()
+
+try:
+    ACTION_PLAN_MODEL_ANTHROPIC = str(
+        st.secrets.get("ACTION_PLAN_MODEL_ANTHROPIC", os.getenv("ACTION_PLAN_MODEL_ANTHROPIC", "claude-sonnet-4-6"))
+        or "claude-sonnet-4-6"
+    ).strip()
+except Exception:
+    ACTION_PLAN_MODEL_ANTHROPIC = str(
+        os.getenv("ACTION_PLAN_MODEL_ANTHROPIC", "claude-sonnet-4-6") or "claude-sonnet-4-6"
+    ).strip()
+
+try:
+    COACHING_PROVIDER = str(
+        st.secrets.get("COACHING_PROVIDER", os.getenv("COACHING_PROVIDER", "anthropic"))
+        or "anthropic"
+    ).strip().lower()
+except Exception:
+    COACHING_PROVIDER = str(os.getenv("COACHING_PROVIDER", "anthropic") or "anthropic").strip().lower()
+if COACHING_PROVIDER not in {"openai", "anthropic"}:
+    COACHING_PROVIDER = "anthropic"
+
+try:
+    COACHING_MODEL_OPENAI = str(
+        st.secrets.get("COACHING_MODEL_OPENAI", os.getenv("COACHING_MODEL_OPENAI", "gpt-4o"))
+        or "gpt-4o"
+    ).strip()
+except Exception:
+    COACHING_MODEL_OPENAI = str(os.getenv("COACHING_MODEL_OPENAI", "gpt-4o") or "gpt-4o").strip()
+
+try:
+    COACHING_MODEL_ANTHROPIC = str(
+        st.secrets.get("COACHING_MODEL_ANTHROPIC", os.getenv("COACHING_MODEL_ANTHROPIC", "claude-sonnet-4-6"))
+        or "claude-sonnet-4-6"
+    ).strip()
+except Exception:
+    COACHING_MODEL_ANTHROPIC = str(
+        os.getenv("COACHING_MODEL_ANTHROPIC", "claude-sonnet-4-6") or "claude-sonnet-4-6"
+    ).strip()
+
 SHEET_NAME = "Projekt_MBJS_DB"
 CALENDAR_IDS = {
     "Sports": "nc41q7u653f9na0nt55i2a8t14@group.calendar.google.com",
@@ -497,8 +570,10 @@ LATE_MODE_START_MIN = 30  # 20:30 이후에는 장시간 운동 제안 금지를
 DAY_WRAPUP_START_HOUR = 21
 DAY_WRAPUP_START_MIN = 0  # 21:00 이후 신규 운동 제안 차단, 하루 마무리 모드
 WRAPUP_SWITCH_HOUR = 23
-WRAPUP_CACHE_VERSION = "v4"
-ACTION_PLAN_CACHE_VERSION = "v8"
+WRAPUP_CACHE_VERSION = "v5"
+ACTION_PLAN_CACHE_VERSION = "v10"
+CHECKIN_STYLE_VERSION = "v3"
+DAILY_FIVE_STYLE_VERSION = "v3"
 DAY_RESET_HOUR = 5
 DEFAULT_DAILY_KCAL_TARGET = 2000
 XC_BASELINE_KG = 0.30
@@ -2870,6 +2945,15 @@ def _is_workout_event_title(title):
     return any(tok in t for tok in workout_tokens)
 
 
+def _is_lesson_event_title(title):
+    t = re.sub(r"\s+", "", str(title or "").lower())
+    if not t:
+        return False
+    # 프로젝트 운영 규칙:
+    # 사용자가 캘린더에 적는 "레슨"은 테니스 레슨으로 간주한다.
+    return ("레슨" in t) or ("lesson" in t)
+
+
 def _is_workout_event(ev):
     if not isinstance(ev, dict):
         return False
@@ -3642,6 +3726,8 @@ def extract_calendar_flags(date_key, cal_evts):
     dinner_tag = False
     lunch_workout = False
     dinner_workout = False
+    lunch_lesson = False
+    dinner_lesson = False
     dinner_workout_times = []
 
     all_events = []
@@ -3654,16 +3740,21 @@ def extract_calendar_flags(date_key, cal_evts):
             continue
         title_compact = re.sub(r"\s+", "", title.lower())
         is_workout = _is_workout_event(e)
+        is_lesson = _is_lesson_event_title(title)
         es = e.get("start_dt")
         ee = e.get("end_dt")
         if es is not None and ee is not None:
             if _overlaps(es, ee, lunch_start, lunch_end):
                 if is_workout:
                     lunch_workout = True
+                    if is_lesson:
+                        lunch_lesson = True
                 lunch_overlap = True
             if _overlaps(es, ee, dinner_start, dinner_end):
                 if is_workout:
                     dinner_workout = True
+                    if is_lesson:
+                        dinner_lesson = True
                     clip_start = max(es, dinner_start)
                     clip_end = min(ee, dinner_end)
                     if clip_start < clip_end:
@@ -3673,11 +3764,15 @@ def extract_calendar_flags(date_key, cal_evts):
         if ("점심" in title_compact) or ("점:" in title_compact) or title_compact.startswith("점"):
             if is_workout:
                 lunch_workout = True
+                if is_lesson:
+                    lunch_lesson = True
             else:
                 lunch_tag = True
         if ("저녁" in title_compact) or ("저:" in title_compact) or title_compact.startswith("저"):
             if is_workout:
                 dinner_workout = True
+                if is_lesson:
+                    dinner_lesson = True
             else:
                 dinner_tag = True
 
@@ -3696,6 +3791,8 @@ def extract_calendar_flags(date_key, cal_evts):
         "dinner_appointment": bool((dinner_overlap or dinner_tag) and (not dinner_workout)),
         "lunch_workout_scheduled": bool(lunch_workout),
         "dinner_workout_scheduled": bool(dinner_workout),
+        "lunch_lesson_scheduled": bool(lunch_lesson),
+        "dinner_lesson_scheduled": bool(dinner_lesson),
         "dinner_workout_start": dinner_workout_start,
         "dinner_workout_end": dinner_workout_end,
     }
@@ -3707,6 +3804,18 @@ def _calendar_fact_sentence(daily_state):
     dinner_appt = bool(cf.get("dinner_appointment", False))
     lunch_workout = bool(cf.get("lunch_workout_scheduled", False))
     dinner_workout = bool(cf.get("dinner_workout_scheduled", False))
+    lunch_lesson = bool(cf.get("lunch_lesson_scheduled", False))
+    dinner_lesson = bool(cf.get("dinner_lesson_scheduled", False))
+    if lunch_lesson and dinner_lesson:
+        return "점심·저녁에 테니스 레슨 일정이 있어, 해당 세션 수행 중심으로 식사·회복만 정리하면 됩니다."
+    if lunch_appt and dinner_lesson:
+        return "점심 약속은 있지만 저녁 테니스 레슨 일정이 있어, 저녁 레슨 수행에 집중하면 됩니다."
+    if dinner_appt and lunch_lesson:
+        return "저녁 약속은 있지만 점심 테니스 레슨 일정이 있어, 점심 레슨 수행에 집중하면 됩니다."
+    if lunch_lesson:
+        return "오늘 점심에 테니스 레슨 일정이 이미 잡혀 있어, 해당 세션 수행 중심으로 운영하면 됩니다."
+    if dinner_lesson:
+        return "오늘 저녁에 테니스 레슨 일정이 이미 잡혀 있어, 해당 세션 수행 중심으로 운영하면 됩니다."
     if lunch_appt and dinner_appt:
         return "오늘은 점심·저녁에 약속이 있어 실행 가능한 시간이 짧습니다."
     if lunch_appt and dinner_workout:
@@ -3747,7 +3856,7 @@ def _apply_calendar_fact_guard(text, daily_state):
     s = " ".join(kept).strip()
     s = re.sub(r"\s{2,}", " ", s).strip()
 
-    has_calendar_hint = bool(re.search(r"(점심|저녁).*(일정|약속)", s))
+    has_calendar_hint = bool(re.search(r"(점심|저녁).*(일정|약속|운동|세션|슬롯)", s))
     if not has_calendar_hint:
         s = f"{fact} {s}".strip()
     return s
@@ -4080,6 +4189,15 @@ def _sanitize_plan_lines(text):
     if not text:
         return ""
 
+    def _norm_key(src):
+        s = str(src or "").strip().lower()
+        s = re.sub(r"^\s*[-•]\s*", "", s)
+        s = re.sub(r"^\s*(지금 상황|현 시점 제안|핵심|현재 상태 요약|현 시점 우선 1개|왜 이걸 우선하냐면|오늘 방어선|오늘 이득)\s*:\s*", "", s)
+        s = re.sub(r"\b\d{1,2}:\d{2}\s*기준\b", "", s)
+        s = re.sub(r"\s*~\s*", "~", s)
+        s = re.sub(r"\s+", " ", s)
+        return s.strip(" .")
+
     cleaned = []
     seen = set()
     for raw in str(text).splitlines():
@@ -4089,12 +4207,11 @@ def _sanitize_plan_lines(text):
         line = re.sub(r"\s+", " ", line)
         line = re.sub(r"(\d{1,2})\s*:\s*(\d{2})", r"\1:\2", line)
         line = re.sub(r"\s*~\s*", "~", line)
+        line = re.sub(r"\b\d{1,2}:\d{2}\s*기준\s*", "", line).strip()
+        line = re.sub(r"^\s*(지금 상황|현 시점 제안)\s*:\s*", "", line).strip()
         line = re.sub(r"\s{2,}", " ", line).strip()
 
-        key = line.lower()
-        key = re.sub(r"(\d{1,2})\s*:\s*(\d{2})", r"\1:\2", key)
-        key = re.sub(r"\s*~\s*", "~", key)
-        key = re.sub(r"\s+", " ", key).strip()
+        key = _norm_key(line)
         if key in seen:
             continue
         seen.add(key)
@@ -4111,16 +4228,19 @@ def _dedupe_consecutive_sentences(text):
         return str(text).strip()
 
     out = []
-    prev_key = None
+    seen = set()
     for p in parts:
         s = str(p or "").strip()
         if not s:
             continue
-        key = re.sub(r"\s+", " ", s).strip().lower()
-        if key == prev_key:
+        key = re.sub(r"^\s*[-•]\s*", "", s).strip().lower()
+        key = re.sub(r"^\s*(핵심|현재 상태 요약|현 시점 우선 1개|왜 이걸 우선하냐면|오늘 방어선|오늘 이득)\s*:\s*", "", key)
+        key = re.sub(r"\b\d{1,2}:\d{2}\s*기준\b", "", key)
+        key = re.sub(r"\s+", " ", key).strip(" .")
+        if key in seen:
             continue
         out.append(s)
-        prev_key = key
+        seen.add(key)
     return " ".join(out).strip()
 
 
@@ -4499,11 +4619,23 @@ def _build_now_loss_gain_hint(daily_state):
     workout = (daily_state or {}).get("workout_done", {}) or {}
     intake = (daily_state or {}).get("intake_today", {}) or {}
     sprint = (daily_state or {}).get("sprint", {}) or {}
+    cal = (daily_state or {}).get("calendar_flags", {}) or {}
     slots = list((daily_state or {}).get("available_slots", []) or [])
     enabled_now = any(bool(s.get("enabled")) and bool(s.get("active_now")) for s in slots)
+    enabled_later = any(bool(s.get("enabled")) and (not bool(s.get("active_now"))) for s in slots)
+    scheduled_slot = next(
+        (
+            s for s in slots
+            if bool(s.get("enabled")) and bool(s.get("scheduled_workout"))
+        ),
+        None,
+    )
+    dinner_lesson = bool(cal.get("dinner_lesson_scheduled", False))
+    lesson_label = "테니스 레슨 세션" if dinner_lesson else "캘린더 운동 세션"
     pace = str(sprint.get("pace_status", "") or "").strip().lower()
     delta = _safe_float(sprint.get("weight_delta"), None)
     req = _safe_float(sprint.get("required_daily_pace"), None)
+    days_left = _safe_int(sprint.get("days_remaining"), 0)
 
     kcal_now = _safe_int(intake.get("kcal_est_today", 0), 0)
     kcal_target = _safe_int(intake.get("kcal_target_today", DEFAULT_DAILY_KCAL_TARGET), DEFAULT_DAILY_KCAL_TARGET)
@@ -4529,8 +4661,26 @@ def _build_now_loss_gain_hint(daily_state):
             gain = "점심을 단백질·채소 중심으로 두면 저녁 폭식을 줄이고 내일 붓기 감소에 유리합니다."
         return loss, gain
 
-    if (not workout.get("worked_out_today", False)) and enabled_now:
-        if (pace == "behind") and (req is not None):
+    if (not workout.get("worked_out_today", False)) and scheduled_slot:
+        st = str(scheduled_slot.get("start") or "")
+        ed = str(scheduled_slot.get("end") or "")
+        window = f"{st}~{ed}" if st and ed else "오늘 예정 시간대"
+        if (pace == "behind") and (days_left <= 0):
+            loss = f"오늘은 마감일이라 {window} {lesson_label} 미실행 자체가 손실입니다. 이 세션을 비우면 반등폭을 그대로 떠안게 됩니다."
+            gain = f"{window} {lesson_label}만 지켜도 마감일 손실을 줄이고 내일 붓기 반등을 낮추는 데 도움이 됩니다."
+        elif (pace == "behind") and (req is not None):
+            loss = f"{window} {lesson_label}을 놓치면 필요한 일일 페이스({req:.2f}kg/일) 대비 오늘 누적 손실이 커질 수 있습니다."
+            gain = f"{window} {lesson_label}만 지켜도 당일 소모를 확보해 내일 체중 반등을 낮추는 데 도움이 됩니다."
+        else:
+            loss = f"{window} {lesson_label}을 비우면 오늘 소모가 0에 가까워져 체중 흐름이 둔해질 수 있습니다."
+            gain = f"{window} {lesson_label}만 지켜도 당일 소모를 확보해 밤 붓기 완화에 도움이 됩니다."
+        return loss, gain
+
+    if (not workout.get("worked_out_today", False)) and (enabled_now or enabled_later):
+        if (pace == "behind") and (days_left <= 0):
+            loss = "오늘은 마감일이라 필요 페이스보다 세션 미실행 자체가 손실입니다. 이 슬롯을 비우면 반등폭을 그대로 떠안게 됩니다."
+            gain = "운동 슬롯에서 20분만 채워도 마감일 손실을 줄이고 내일 붓기 반등을 낮추는 데 도움이 됩니다."
+        elif (pace == "behind") and (req is not None):
             loss = f"운동 슬롯을 비우면 필요한 일일 페이스({req:.2f}kg/일) 대비 오늘 누적 손실이 커질 수 있습니다."
             gain = "운동 슬롯에서 20분만 채워도 당일 소모를 확보해 내일 체중 반등을 낮추는 데 도움이 됩니다."
         else:
@@ -4563,6 +4713,9 @@ def _build_contextual_why_line(daily_state):
     dinner_done = bool(meal.get("dinner_done", False))
     worked = bool(workout.get("worked_out_today", False))
 
+    if days_left <= 0:
+        return "왜 이걸 우선하냐면: 오늘은 스프린트 마감일이라 페이스 숫자보다 추가 반등을 막는 선택이 내일 체중을 가장 크게 좌우하기 때문입니다."
+
     if (pace == "behind") and (delta is not None) and (delta > 0):
         if req is not None:
             return (
@@ -4590,11 +4743,29 @@ def build_forced_next_action_from_state(daily_state):
     slots = daily_state.get("available_slots", []) or []
     enabled_now = [s for s in slots if s.get("enabled") and s.get("active_now")]
     enabled_later = [s for s in slots if s.get("enabled") and (not s.get("active_now"))]
+    cal = daily_state.get("calendar_flags", {}) or {}
+
+    def _slot_session_label(slot):
+        slot_id = str((slot or {}).get("slot_id", "") or "")
+        if not bool((slot or {}).get("scheduled_workout", False)):
+            return ""
+        if slot_id == "lunch_window" and bool(cal.get("lunch_lesson_scheduled", False)):
+            return "테니스 레슨 세션"
+        if slot_id == "evening_window" and bool(cal.get("dinner_lesson_scheduled", False)):
+            return "테니스 레슨 세션"
+        return "캘린더 운동 세션"
+
     if enabled_now:
         s = enabled_now[0]
         label = str(s.get("label") or s.get("slot_id") or "다음 슬롯")
         start = str(s.get("start") or "")
         end = str(s.get("end") or "")
+        session_label = _slot_session_label(s)
+        if session_label:
+            return (
+                f"현 시점 우선 1개: {label}({start}-{end})에 잡힌 {session_label}을 그대로 수행하세요. "
+                "추가 유산소·근력 루틴을 붙이지 말고 해당 세션 완료 여부로 하루를 판정하면 됩니다."
+            )
         return (
             f"현 시점 우선 1개: {label}({start}-{end})를 오늘의 1순위 운동 슬롯으로 고정하세요. "
             "해당 시간대에는 20분 걷기부터 시작해 기록까지 마무리하면 됩니다."
@@ -4604,6 +4775,12 @@ def build_forced_next_action_from_state(daily_state):
         label = str(s.get("label") or s.get("slot_id") or "다음 슬롯")
         start = str(s.get("start") or "")
         end = str(s.get("end") or "")
+        session_label = _slot_session_label(s)
+        if session_label:
+            return (
+                f"현 시점 우선 1개: {label}({start}-{end})에 잡힌 {session_label}을 우선순위로 고정하세요. "
+                "추가 유산소·근력 루틴을 붙이지 말고 해당 세션 완료 여부로 오늘을 판정하면 됩니다."
+            )
         return (
             f"현 시점 우선 1개: {label}({start}-{end}) 시작 시각을 운동 시작선으로 잡으세요. "
             "그 시간대에는 20분 걷기 1회를 우선 완료하는 방향이 좋습니다."
@@ -4613,6 +4790,9 @@ def build_forced_next_action_from_state(daily_state):
 
 def _normalize_warning_text(warns, daily_state):
     raw = str(warns or "").strip()
+    # API/모델/패키지 실패 원인은 덮어쓰지 않고 그대로 노출한다.
+    if _is_infra_error_text(raw):
+        return raw
     _food_risk_fn = globals().get("_detect_today_food_risk", lambda _s: {"has_high": False, "high_hits": []})
     _alcohol_risk_fn = globals().get("_detect_today_alcohol_risk", lambda _s: {"has_alcohol": False})
     _risk_level_fn = globals().get("_resolve_food_risk_tone_level", lambda _s, _r: "none")
@@ -4716,6 +4896,11 @@ def _build_personalized_blocking_line(daily_state):
         return f"오늘 방어선: {kw}가 있었던 만큼 남은 끼니는 단순하게 가져가야 내일 반등폭을 줄일 수 있습니다."
 
     if (pace == "behind") and (gap is not None) and (gap > 0):
+        if days_left <= 0:
+            return (
+                f"오늘 방어선: 마감일 상태에서 {gap:.2f}kg 격차가 남아 있어, "
+                "추가 섭취·운동 미실행이 겹치면 손실이 내일 체중 반등으로 바로 고정될 수 있습니다."
+            )
         if req is not None:
             return (
                 f"오늘 방어선: 지금 식사·운동이 흔들리면 {gap:.2f}kg 격차가 내일 고정되고, "
@@ -4767,6 +4952,9 @@ def _build_personalized_gain_line(daily_state):
             return "오늘 이득: 남은 끼니를 단백질·채소로 고정하면 오늘 손실을 최소화하고 내일 반등폭을 확실히 줄일 수 있습니다."
         return "오늘 이득: 남은 끼니를 가볍게 정리하면 오늘 섭취 영향을 완만하게 눌러 내일 컨디션을 지킬 수 있습니다."
 
+    if (pace == "behind") and (gap is not None) and (gap > 0) and (days_left <= 0):
+        return "오늘 이득: 마감일에는 핵심 1개(운동 세션 실행+추가 섭취 차단)만 지켜도 내일 반등폭을 눈에 띄게 줄일 수 있습니다."
+
     if (pace == "behind") and (gap is not None) and (gap > 0):
         if req is not None:
             return (
@@ -4811,6 +4999,7 @@ def _build_critical_now_line(daily_state):
     kcal_target = _safe_int(intake.get("kcal_target_today", DEFAULT_DAILY_KCAL_TARGET), DEFAULT_DAILY_KCAL_TARGET)
     worked = bool(workout.get("worked_out_today", False))
     dinner_workout = bool(cal.get("dinner_workout_scheduled", False))
+    dinner_lesson = bool(cal.get("dinner_lesson_scheduled", False))
     high_hits = list(food_risk.get("high_hits", []) or [])
     has_high_food = bool(food_risk.get("has_high", False))
     has_alcohol = bool(alcohol_risk.get("has_alcohol", False))
@@ -4830,15 +5019,22 @@ def _build_critical_now_line(daily_state):
         risk_part = ""
 
     if dinner_workout and (not worked):
+        dinner_session_name = "테니스 레슨 일정" if dinner_lesson else "운동 일정"
         risk_prefix = f"{risk_part} " if risk_part else ""
+        if (pace == "behind") and (days_left <= 0):
+            return (
+                f"{prefix}{risk_prefix}저녁 {ev_start}~{ev_end} {dinner_session_name}이 이미 잡혀 있습니다. "
+                "오늘은 스프린트 마감일이라 이 세션을 미실행하면 손실이 내일 반등으로 바로 고정될 수 있습니다. "
+                f"{kcal_part}라서 저녁은 보정식 중심이 유리합니다."
+            )
         if (pace == "behind") and (req is not None):
             return (
-                f"{prefix}{risk_prefix}저녁 {ev_start}~{ev_end} 운동 일정이 이미 잡혀 있습니다. "
+                f"{prefix}{risk_prefix}저녁 {ev_start}~{ev_end} {dinner_session_name}이 이미 잡혀 있습니다. "
                 f"이 세션을 미실행하면 남은 {days_left}일 필요 페이스가 {req:.2f}kg/일로 더 가팔라집니다. "
                 f"{kcal_part}라서 저녁은 보정식 중심이 유리합니다."
             )
         return (
-            f"{prefix}{risk_prefix}저녁 {ev_start}~{ev_end} 운동 일정이 이미 잡혀 있습니다. "
+            f"{prefix}{risk_prefix}저녁 {ev_start}~{ev_end} {dinner_session_name}이 이미 잡혀 있습니다. "
             f"오늘 결과는 이 세션 실행 여부가 거의 결정합니다. {kcal_part}라 저녁은 과식 방어가 핵심입니다."
         )
 
@@ -4866,7 +5062,7 @@ def validate_action_plan_output(result, daily_state):
     if not isinstance(result, dict):
         return result
 
-    # 테스트 환경(함수 단독 로드)에서도 안전하게 동작하도록 헬퍼 fallback을 둔다.
+    # 강제 문장 삽입을 최소화하고, 사실/가독성/중복만 정리한다.
     _apply_guard = globals().get("_apply_calendar_fact_guard", lambda t, _s: str(t or ""))
     _rewrite_vague = globals().get("_rewrite_vague_korean", lambda t: str(t or ""))
     _humanize = globals().get("humanize_action_text", lambda t: str(t or ""))
@@ -4874,110 +5070,111 @@ def validate_action_plan_output(result, daily_state):
     _dedupe_sent = globals().get("_dedupe_consecutive_sentences", lambda t: str(t or ""))
     _warn_norm = globals().get("_normalize_warning_text", lambda w, _s: str(w or ""))
     _critical_now = globals().get("_build_critical_now_line", lambda _s: "")
-    _loss_gain = globals().get("_build_now_loss_gain_hint", lambda _s: ("", ""))
-    _state_snapshot = globals().get("_build_state_snapshot_line", lambda _s: "")
-    _context_why = globals().get("_build_contextual_why_line", lambda _s: "")
     _forced_next = globals().get("build_forced_next_action_from_state", lambda _s: "")
-    _blocking_line = globals().get("_build_personalized_blocking_line", lambda _s: "")
-    _gain_line = globals().get("_build_personalized_gain_line", lambda _s: "")
-    _evidence_gate = globals().get("_enforce_evidence_quality", lambda _t, _s: True)
-    _tone_downgrade = globals().get("_downgrade_false_positive_tone", lambda _t, _s: str(_t or ""))
 
     text = str(result.get("next_actions", "") or "")
     warns = str(result.get("warnings", "") or "")
     analysis = str(result.get("current_analysis", "") or "")
     cal = (daily_state or {}).get("calendar_flags", {}) or {}
     dinner_workout = bool(cal.get("dinner_workout_scheduled", False))
+    dinner_lesson = bool(cal.get("dinner_lesson_scheduled", False))
     slots = list((daily_state or {}).get("available_slots", []) or [])
     evening_slot = next((s for s in slots if str(s.get("slot_id", "")) == "evening_window"), None)
     ev_start = str(cal.get("dinner_workout_start") or str((evening_slot or {}).get("start", "") or "19:00"))
     ev_end = str(cal.get("dinner_workout_end") or str((evening_slot or {}).get("end", "") or "23:59"))
-    worked = bool(((daily_state or {}).get("workout_done", {}) or {}).get("worked_out_today", False))
 
-    text = text.replace("초저녁", "저녁")
-    warns = warns.replace("초저녁", "저녁")
-    analysis = analysis.replace("초저녁", "저녁")
+    def _strip_heading_noise(src):
+        s = str(src or "")
+        s = re.sub(r"\b\d{1,2}:\d{2}\s*기준\b", "", s)
+        s = re.sub(r"^\s*(지금 상황|현 시점 제안)\s*[:：]\s*", "", s, flags=re.MULTILINE)
+        s = re.sub(r"\s{2,}", " ", s).strip()
+        return s
 
-    # 저녁 운동 일정이 있는 날의 어색/모순 문구 제거
+    def _keyset(src):
+        parts = re.split(r"(?<=[\.\!\?])\s+|\n+", str(src or "").strip())
+        out = set()
+        for p in parts:
+            k = str(p or "").strip().lower()
+            if not k:
+                continue
+            k = re.sub(r"^\s*[-•]\s*", "", k)
+            k = re.sub(r"^\s*(핵심|현재 상태 요약|현 시점 우선 1개|왜 이걸 우선하냐면|오늘 방어선|오늘 이득)\s*:\s*", "", k)
+            k = re.sub(r"\b\d{1,2}:\d{2}\s*기준\b", "", k)
+            k = re.sub(r"\s+", " ", k).strip(" .")
+            if k:
+                out.add(k)
+        return out
+
+    def _drop_overlap(action_text, analysis_text):
+        a_keys = _keyset(analysis_text)
+        kept = []
+        for ln in re.split(r"\n+", str(action_text or "").strip()):
+            raw = ln.strip()
+            if not raw:
+                continue
+            key = re.sub(r"^\s*[-•]\s*", "", raw).strip().lower()
+            key = re.sub(r"^\s*(핵심|현재 상태 요약|현 시점 우선 1개|왜 이걸 우선하냐면|오늘 방어선|오늘 이득)\s*:\s*", "", key)
+            key = re.sub(r"\s+", " ", key).strip(" .")
+            if key and key in a_keys:
+                continue
+            kept.append(raw)
+        return "\n".join(kept).strip()
+
+    text = _strip_heading_noise(text.replace("초저녁", "저녁"))
+    warns = _strip_heading_noise(warns.replace("초저녁", "저녁"))
+    analysis = _strip_heading_noise(analysis.replace("초저녁", "저녁"))
+
+    # 사실 보정: 캘린더 저녁 운동 시간창은 실제 겹침 시간으로 교정한다.
     if dinner_workout:
-        analysis = re.sub(r"오늘은 저녁 일정이 있어 저녁 시간대 [^\.!\n]*(?:[\.!]|$)", " ", analysis)
-        analysis = re.sub(r"또한 운동이 필요하며, 오늘은 저녁에 운동 계획이 있습니다\.?", " ", analysis)
-        text = re.sub(r"오늘은 저녁 일정이 있어 저녁 시간대 [^\.!\n]*(?:[\.!]|$)", " ", text)
-        text = re.sub(r"저녁 운동 슬롯에 맞춰 계획된 운동을 진행하도록 준비해 주세요\.?", " ", text)
+        text = re.sub(r"\b19:00\s*~\s*23:59\b", f"{ev_start}~{ev_end}", text)
+        analysis = re.sub(r"\b19:00\s*~\s*23:59\b", f"{ev_start}~{ev_end}", analysis)
 
-    text = _sanitize_plan_lines(text)
-    text = "\n".join(_dedupe_sent(x) for x in str(text).splitlines() if str(x).strip()).strip()
-    analysis = _dedupe_sent(analysis)
+    # 용어 보정: 사용자 표현 기준으로 "자유 슬롯 제한"은 자연어로 치환
+    text = re.sub(r"저녁\s*시간대\s*자유\s*슬롯이\s*제한됩니다", "저녁 시간 선택지가 좁습니다", text)
+    analysis = re.sub(r"저녁\s*시간대\s*자유\s*슬롯이\s*제한됩니다", "저녁 시간 선택지가 좁습니다", analysis)
 
+    # 레슨 일정이 있으면 "유산소+근력" 같은 추가 루틴 강요 문구를 세션 수행 문구로 보정
+    if dinner_lesson:
+        def _rewrite_lesson_mode(src):
+            s = str(src or "")
+            s = re.sub(r"유산소\s*\d+\s*분\s*\+\s*근력\s*\d+\s*분", "캘린더에 잡힌 테니스 레슨 세션", s)
+            s = re.sub(r"근력\s*\d+\s*분", "레슨 세션", s)
+            s = re.sub(r"유산소\s*\d+\s*분", "레슨 세션", s)
+            s = re.sub(r"20\s*분\s*걷기", "레슨 세션", s)
+            s = re.sub(r"운동\s*30\s*분\s*이상", "레슨 세션", s)
+            return s
+        text = _rewrite_lesson_mode(text)
+        analysis = _rewrite_lesson_mode(analysis)
+
+    # 사실 가드 + 모호표현 축소
     analysis = _apply_guard(analysis, daily_state)
     text = _apply_guard(text, daily_state)
-
     analysis = _rewrite_vague(analysis)
-    analysis = _tone_downgrade(analysis, daily_state)
     text = _rewrite_vague(text)
-    if not text.strip():
-        text = "오늘 남은 시간 기준으로 가장 현실적인 핵심 1개를 먼저 정하고, 실행 조건(시간·장소·분량)을 붙여 확정하세요."
+
     warns = _rewrite_vague(warns)
     warns = _warn_norm(warns, daily_state)
     warns = _dedupe_sent(warns)
 
-    critical_line = str(_critical_now(daily_state) or "").strip()
-    snapshot_line = str(_state_snapshot(daily_state) or "").strip()
-    why_line = str(_context_why(daily_state) or "").strip()
-    forced_next_line = str(_forced_next(daily_state) or "").strip()
+    # 출력이 비었을 때만 최소 안전 문장 보강
+    if not analysis.strip():
+        analysis = str(_critical_now(daily_state) or "").strip()
+    if not text.strip():
+        text = str(_forced_next(daily_state) or "").strip()
+    if not analysis.strip():
+        analysis = "오늘 데이터 기준으로 리스크와 우선순위를 다시 점검해 주세요."
+    if not text.strip():
+        text = "현 시점에서 가장 중요한 행동 1개를 확정하고 실행 조건(시간·분량)을 붙여 완료하세요."
 
-    if snapshot_line and ("현재 상태 요약:" not in analysis):
-        analysis = f"{snapshot_line}\n{analysis}".strip()
-
-    if critical_line:
-        if "핵심:" not in analysis:
-            analysis = f"{critical_line}\n{analysis}".strip()
-        elif critical_line not in analysis:
-            analysis = f"{critical_line}\n{analysis}".strip()
-
-    # 일반론 출력이 들어와도 개인화 근거 문장을 보강
-    if not _evidence_gate(analysis, daily_state):
-        blocks = [x for x in [critical_line, snapshot_line, analysis] if str(x or "").strip()]
-        analysis = "\n".join(blocks).strip()
-
-    # 저녁 운동 일정이 잡힌 날에는 "현 시점 우선 1개"를 강제 주입
-    if dinner_workout and (not worked):
-        forced_now = (
-            f"현 시점 우선 1개: 저녁 {ev_start}~{ev_end} 캘린더 운동 세션을 반드시 실행하세요. "
-            "오늘은 추가 계획을 늘리지 말고 이 세션 완료 여부로 하루를 판정합니다."
-        )
-        if "현 시점 우선 1개:" not in text:
-            text = f"{forced_now}\n{text}".strip()
-    elif forced_next_line and ("현 시점 우선 1개:" not in text):
-        text = f"{forced_next_line}\n{text}".strip()
-
-    if why_line and ("왜 이걸 우선하냐면:" not in text):
-        text = f"{text}\n{why_line}".strip()
-
-    loss_line, gain_line = _loss_gain(daily_state)
-    loss_line = str(loss_line or "").strip()
-    gain_line = str(gain_line or "").strip()
-    p_loss_line = str(_blocking_line(daily_state) or "").strip()
-    p_gain_line = str(_gain_line(daily_state) or "").strip()
-    if p_loss_line and ("오늘 방어선:" not in text):
-        text = f"{text}\n{p_loss_line}".strip()
-    elif loss_line and ("오늘 방어선:" not in text):
-        text = f"{text}\n{loss_line}".strip()
-    if p_gain_line and ("오늘 이득:" not in text):
-        text = f"{text}\n{p_gain_line}".strip()
-    elif gain_line and ("오늘 이득:" not in text):
-        text = f"{text}\n{gain_line}".strip()
-
-    # 저녁 운동 강제 라인이 들어간 날에는 중복 설명 문장을 강하게 제거
-    if dinner_workout and ("현 시점 우선 1개:" in text):
-        text = re.sub(r"오늘 저녁에 운동 일정이 이미 잡혀 있어[^\.!\n]*(?:[\.!]|$)", " ", text)
-        text = re.sub(r"저녁 운동을\s*\d{1,2}:\d{2}\s*이후에[^\.!\n]*(?:[\.!]|$)", " ", text)
-        text = re.sub(r"해당 세션 실행 중심으로 운영하면 됩니다\.?", " ", text)
-        text = re.sub(r"\s{2,}", " ", text).strip()
-
-    # 최종 출력 직전 중복/시간표기 재정리
+    # 최종 중복/형식 정리
     analysis = _sanitize_plan_lines(analysis)
     text = _sanitize_plan_lines(text)
+    analysis = _dedupe_sent(analysis)
+    text = _dedupe_sent(text)
+    text = _drop_overlap(text, analysis)
+    text = "\n".join([ln for ln in re.split(r"\n+", text) if ln.strip()][:5]).strip()
+    if not text:
+        text = str(_forced_next(daily_state) or "").strip()
 
     result["current_analysis"] = _polish(_humanize(analysis))
     result["next_actions"] = _polish(_humanize(text))
@@ -4988,6 +5185,8 @@ def validate_action_plan_output(result, daily_state):
 def format_ai_error_message(e):
     msg = str(e or "").strip()
     low = msg.lower()
+    if ("anthropic" in low) and (("api key" in low) or ("authentication" in low) or ("unauthorized" in low)):
+        return "Claude API 인증 오류입니다. ANTHROPIC_API_KEY를 확인해 주세요."
     if ("insufficient_quota" in low) or ("error code: 429" in low) or ("quota" in low):
         return "OpenAI API 한도(429) 문제입니다. 결제/프로젝트 키를 확인해 주세요."
     if ("model" in low) and (("not found" in low) or ("does not exist" in low) or ("permission" in low)):
@@ -4997,23 +5196,222 @@ def format_ai_error_message(e):
     return f"AI 호출 오류: {msg[:220]}"
 
 
+def _is_infra_error_text(msg):
+    low = str(msg or "").lower()
+    infra_tokens = [
+        "api key", "authentication", "unauthorized", "forbidden",
+        "quota", "429", "rate limit", "timeout", "timed out",
+        "model", "not found", "does not exist", "permission",
+        "anthropic", "openai", "network", "connection",
+        "package not installed", "no module named",
+    ]
+    return any(t in low for t in infra_tokens)
+
+
+def _is_model_error_text(msg):
+    low = str(msg or "").lower()
+    return ("model" in low) and (
+        ("not found" in low) or ("does not exist" in low) or ("permission" in low)
+    )
+
+
+def _unique_keep_order(items):
+    out, seen = [], set()
+    for x in list(items or []):
+        s = str(x or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def _anthropic_model_candidates(preferred=None):
+    return _unique_keep_order([
+        preferred,
+        os.getenv("ANTHROPIC_MODEL", ""),
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-3-7-sonnet-latest",
+        "claude-3-5-sonnet-latest",
+    ])
+
+
+def _anthropic_messages_create_with_fallback(client, *, preferred_model, max_tokens, temperature, messages):
+    last_error = None
+    for model_name in _anthropic_model_candidates(preferred_model):
+        try:
+            return client.messages.create(
+                model=model_name,
+                max_tokens=int(max_tokens),
+                temperature=float(temperature),
+                messages=messages,
+            )
+        except Exception as e:
+            last_error = e
+            # 모델 ID/권한 에러는 다음 후보를 시도하고,
+            # 그 외 에러는 즉시 상위로 전달한다.
+            if _is_model_error_text(e):
+                continue
+            raise
+    if last_error:
+        raise last_error
+    raise RuntimeError("Anthropic model candidates were empty")
+
+
+def _extract_json_object_text(raw_text):
+    txt = str(raw_text or "").strip()
+    if not txt:
+        return ""
+    if txt.startswith("{") and txt.endswith("}"):
+        return txt
+    m = re.search(r"\{[\s\S]*\}", txt)
+    return m.group(0).strip() if m else ""
+
+
+def _resolve_provider(provider=None):
+    p = str(provider or COACHING_PROVIDER or "anthropic").strip().lower()
+    if p not in {"openai", "anthropic"}:
+        p = "anthropic"
+    return p
+
+
+def _coaching_has_provider_key(provider=None):
+    p = _resolve_provider(provider)
+    if p == "anthropic":
+        return bool(str(ANTHROPIC_API_KEY or "").strip())
+    return bool(str(OPENAI_API_KEY or "").strip())
+
+
+def _coaching_text_completion(
+    prompt,
+    provider=None,
+    model_openai=None,
+    model_anthropic=None,
+    max_tokens=600,
+    temperature=0.6,
+):
+    p = _resolve_provider(provider)
+    if p == "anthropic":
+        if not ANTHROPIC_API_KEY:
+            raise RuntimeError("Anthropic API key is missing")
+        try:
+            import anthropic  # type: ignore
+        except Exception as ie:
+            raise RuntimeError(f"anthropic package not installed: {ie}")
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        resp = _anthropic_messages_create_with_fallback(
+            client,
+            preferred_model=str(model_anthropic or COACHING_MODEL_ANTHROPIC),
+            max_tokens=max_tokens,
+            temperature=temperature,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        parts = []
+        for b in list(getattr(resp, "content", []) or []):
+            t = getattr(b, "text", None)
+            if t:
+                parts.append(str(t))
+        return "\n".join(parts).strip()
+
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OpenAI API key is missing")
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=str(model_openai or COACHING_MODEL_OPENAI),
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=int(max_tokens),
+        temperature=float(temperature),
+    )
+    return str(response.choices[0].message.content or "").strip()
+
+
+def _coaching_json_completion(
+    prompt,
+    provider=None,
+    model_openai=None,
+    model_anthropic=None,
+    max_tokens=900,
+    temperature=0.6,
+):
+    p = _resolve_provider(provider)
+    if p == "anthropic":
+        raw = _coaching_text_completion(
+            prompt=prompt,
+            provider="anthropic",
+            model_anthropic=model_anthropic or COACHING_MODEL_ANTHROPIC,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        obj_txt = _extract_json_object_text(raw)
+        if not obj_txt:
+            raise RuntimeError("Claude response did not contain JSON object")
+        return json.loads(obj_txt)
+
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OpenAI API key is missing")
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=str(model_openai or COACHING_MODEL_OPENAI),
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+    )
+    return json.loads(response.choices[0].message.content)
+
+
+def _action_plan_chat_completion_json(prompt):
+    provider = str(ACTION_PLAN_PROVIDER or "openai").strip().lower()
+    if provider == "anthropic":
+        if not ANTHROPIC_API_KEY:
+            raise RuntimeError("Anthropic API key is missing")
+        try:
+            import anthropic  # type: ignore
+        except Exception as ie:
+            raise RuntimeError(f"anthropic package not installed: {ie}")
+
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        resp = _anthropic_messages_create_with_fallback(
+            client,
+            preferred_model=ACTION_PLAN_MODEL_ANTHROPIC,
+            max_tokens=900,
+            temperature=0.6,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        parts = []
+        for b in list(getattr(resp, "content", []) or []):
+            t = getattr(b, "text", None)
+            if t:
+                parts.append(str(t))
+        raw = "\n".join(parts).strip()
+        obj_txt = _extract_json_object_text(raw)
+        if not obj_txt:
+            raise RuntimeError("Claude response did not contain JSON object")
+        return json.loads(obj_txt)
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=ACTION_PLAN_MODEL_OPENAI,
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+    )
+    return json.loads(response.choices[0].message.content)
+
+
 def build_rule_based_action_plan(daily_state, daily_five_focus=None):
     lines = [
-        "AI 응답 생성에 실패했습니다. 1-2분 후 다시 생성해 주세요.",
-        f"North Star: {NORTH_STAR_OBJECTIVE}",
-        "현재 시점 의사결정은 daily_state 기준 사실 데이터로 다시 평가됩니다.",
+        "AI 응답 생성에 실패해 임시 플랜으로 전환했습니다. 아래 1개만 먼저 실행하세요.",
         build_forced_next_action_from_state(daily_state),
     ]
     xc = (daily_state.get("xc", {}) or {}).get("xc_value_kg")
     if xc is not None:
-        lines.append(f"참고 지표: 오늘 xC는 {float(xc):.2f}kg 기준입니다.")
+        lines.append(f"참고: 오늘 xC 목표 변화량은 {float(xc):.2f}kg입니다.")
     df_focus = daily_five_focus or {}
     if bool(df_focus.get("has_plan")):
         lines.append(f"DF 상태: {str(df_focus.get('summary_line', '')).strip()}")
         rem = list(df_focus.get("remaining_tasks", []) or [])
         if rem:
             top = rem[0]
-            lines.append(f"우선 DF: ({top.get('task_id','')}) {top.get('title','')}")
+            lines.append(f"다음 우선 DF: ({top.get('task_id','')}) {top.get('title','')}")
     return "\n".join(lines)
 
 
@@ -5045,6 +5443,8 @@ def format_coaching_readability_markdown(text):
     normalized = src
     normalized = re.sub(r"(\d{1,2})\s*:\s*(\d{2})", r"\1:\2", normalized)
     normalized = re.sub(r"\s*~\s*", "~", normalized)
+    # ① ② ③ 같은 인라인 번호는 줄 분리
+    normalized = re.sub(r"(?<!\n)\s*([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])\s*", r"\n\1 ", normalized)
     # 특정 헤딩 토큰은 문장 중간에 있어도 강제로 줄 분리
     for token in heading_tokens:
         normalized = re.sub(
@@ -5067,6 +5467,16 @@ def format_coaching_readability_markdown(text):
             continue
         if line.startswith("- "):
             lines.append(line)
+            continue
+
+        num_m = re.match(r"^([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])\s*(.*)$", line)
+        if num_m:
+            n = num_m.group(1)
+            b = num_m.group(2).strip()
+            if b:
+                lines.append(f"- **{n}** {b}")
+            else:
+                lines.append(f"- **{n}**")
             continue
 
         if ":" in line:
@@ -5111,75 +5521,50 @@ def _df_force_task_specificity(task, idx, progress, slots):
     why = str(t.get("why", "") or "").strip()
 
     if not title:
-        if idx == 1:
-            if active_now:
-                sl = str(active_now.get("label") or active_now.get("slot_id") or "현재 가능")
-                title = f"오늘 우선: {sl} 슬롯 20분 걷기 1회"
-            elif enabled_later:
-                sl = str(enabled_later.get("label") or enabled_later.get("slot_id") or "다음 가능")
-                st = str(enabled_later.get("start") or "")
-                title = f"오늘 우선: {sl}({st}) 슬롯 시작선 고정"
-            else:
-                title = "오늘 우선: 식단·수분 방어 1개 확정"
-        elif idx == 2:
-            title = "오늘 점심 탄수 0으로 고정"
-        elif idx == 3:
-            title = "퇴근 후 추가 섭취 차단"
-        elif idx == 4:
-            title = "저녁 전 수분·붓기 관리"
+        if idx == 1 and active_now:
+            title = f"{str(active_now.get('label') or '운동')} 슬롯 실행"
+        elif idx == 1 and enabled_later:
+            title = f"{str(enabled_later.get('label') or '운동')} 슬롯 고정"
         else:
-            title = "오늘 기록 1회 완료"
-
-    if "오늘" not in title:
-        title = f"오늘 {title}"
+            title = f"오늘 핵심 과제 {idx}"
 
     if not desc:
-        if idx == 1:
-            if active_now:
-                st = str(active_now.get("start") or "")
-                ed = str(active_now.get("end") or "")
-                desc = f"실행: {st}-{ed} 사이에 20분 걷기 1회를 완료하고 기록하세요."
-            elif enabled_later:
-                st = str(enabled_later.get("start") or "")
-                ed = str(enabled_later.get("end") or "")
-                desc = f"실행: {st}-{ed} 시간대를 오늘 운동 우선 슬롯으로 고정하고 20분 걷기 1회를 채우세요."
-            else:
-                desc = "실행: 오늘은 운동 슬롯이 부족하니 저녁 추가 섭취를 막고 수면을 30분 앞당기세요."
-        elif idx == 2:
-            desc = "실행: 점심은 단백질+채소로 먹고 밥/면/튀김은 빼세요."
-        elif idx == 3:
-            desc = "실행: 저녁은 탄수 없이 단백질 소량으로 마무리하세요."
-        elif idx == 4:
-            desc = "실행: 오후 16시 이후 물 300ml 이내로 조절하세요."
+        if idx == 1 and active_now:
+            st = str(active_now.get("start") or "")
+            ed = str(active_now.get("end") or "")
+            desc = f"{st}~{ed} 사이에 20~30분 운동 1회를 완료하세요."
+        elif idx == 1 and enabled_later:
+            st = str(enabled_later.get("start") or "")
+            ed = str(enabled_later.get("end") or "")
+            desc = f"{st}~{ed} 슬롯을 오늘 우선 블록으로 확정하고 20~30분 움직이세요."
         else:
-            desc = "실행: 오늘 마지막에 식사/운동/복약 기록을 1회 완료하세요."
+            desc = "오늘 가능한 시간대에 20~30분 단위로 바로 실행 가능한 행동 1개를 끝내세요."
 
-    if not desc.startswith("실행:"):
-        desc = f"실행: {desc}"
     if not _df_has_concrete_detail(desc):
-        # 수치가 없으면 최소 실행 단위를 강제로 붙인다.
-        desc = f"{desc} (최소 20분 또는 1회 기준)"
+        if idx == 1 and enabled_later:
+            st = str(enabled_later.get("start") or "")
+            ed = str(enabled_later.get("end") or "")
+            desc = f"{desc} (예: {st}~{ed} 중 20~30분)"
+        else:
+            desc = f"{desc} (예: 20~30분 1회)"
 
     if not why:
-        why = "안 하면 오늘 페이스가 밀리는 손해가 있고, 하면 오늘 복구 속도가 좋아집니다."
-    # why에 손해/개선 포인트가 없으면 강제로 보완
-    if ("손해" not in why) or (not any(x in why for x in ["좋아집", "유리", "개선", "줄어", "낮출 수", "좋은 점"])):
         if (pace == "behind") and (gap is not None) and (gap > 0):
-            why = (
-                f"안 하면 현재 {gap:.2f}kg 격차가 더 벌어져 남은 {days_left}일 복구 난도가 커지는 손해가 있고, "
-                f"하면 오늘 격차 확대를 막아 회복 페이스에 유리합니다."
-            )
+            why = f"지금 안 하면 {gap:.2f}kg 격차가 더 벌어질 손해가 있고, 오늘 실행하면 내일 반등을 줄이는 이득이 있습니다."
         elif req is not None:
-            why = (
-                f"안 하면 필요한 일일 페이스 {req:.2f}kg/일 대비 누적 손실이 커지는 손해가 있고, "
-                f"하면 내일 반등을 낮춰 주간 페이스 유지에 좋은 점이 있습니다."
-            )
+            why = f"지금 안 하면 필요 페이스({req:.2f}kg/일) 대비 손해가 쌓이고, 지금 하면 내일 회복 폭을 키우는 이득이 있습니다."
         else:
-            why = "안 하면 오늘 페이스가 밀리는 손해가 있고, 하면 내일 체중 방어에 유리합니다."
+            why = "지금 미루면 손해가 커지고, 오늘 끝내면 내일 컨디션을 지키는 이득이 있습니다."
 
-    t["title"] = polish_korean_coaching_text(title)
-    t["description"] = polish_korean_coaching_text(desc)
-    t["why"] = polish_korean_coaching_text(why)
+    if ("손해" not in why) or (not any(x in why for x in ["이득", "유리", "좋아", "개선", "줄어"])):
+        if (pace == "behind") and (gap is not None) and (gap > 0):
+            why = f"{why} 안 하면 격차가 커지는 손해가 있고, 하면 오늘 격차 확대를 막는 이득이 있습니다."
+        else:
+            why = f"{why} 안 하면 내일 반등 손해가 생기고, 하면 내일 수치를 지키는 이득이 있습니다."
+
+    t["title"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(title)))
+    t["description"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(desc)))
+    t["why"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(why)))
     t["task_id"] = str(t.get("task_id", f"task_{idx}") or f"task_{idx}")
     t["priority"] = max(1, min(5, _safe_int(t.get("priority", idx), idx)))
     t["category"] = str(t.get("category", "diet") or "diet")
@@ -5192,7 +5577,7 @@ def _normalize_daily_five_result(result, progress, slots, default_mode):
     tasks = [x for x in tasks if isinstance(x, dict)]
     tasks = tasks[:5]
 
-    # 부족한 과제는 강제 보충
+    # 부족한 과제는 최소 보충
     while len(tasks) < 5:
         tasks.append({})
 
@@ -5212,19 +5597,15 @@ def _normalize_daily_five_result(result, progress, slots, default_mode):
         if (pace == "behind") and (gap is not None) and (gap > 0):
             if req is not None:
                 msg = (
-                    f"스프린트 Day {day_now} 기준 위기 구간입니다. 목표 대비 {gap:.2f}kg 뒤처져 있고, "
-                    f"남은 {days_left}일 동안 필요한 평균은 {req:.2f}kg/일입니다."
+                    f"오늘은 복구 우선 날입니다. 현재 격차 {gap:.2f}kg, 남은 필요 페이스는 {req:.2f}kg/일입니다."
                 )
             else:
-                msg = f"스프린트 Day {day_now} 기준 위기 구간입니다. 목표 대비 {gap:.2f}kg 뒤처져 있습니다."
+                msg = f"오늘은 복구 우선 날입니다. 현재 격차 {gap:.2f}kg를 더 키우지 않는 게 핵심입니다."
         elif req is not None:
-            msg = (
-                f"스프린트 Day {day_now} 기준 관리 구간입니다. 남은 {days_left}일 동안 "
-                f"{req:.2f}kg/일 페이스를 유지할 수 있는 선택이 필요합니다."
-            )
+            msg = f"오늘은 페이스 유지 날입니다. 남은 {days_left}일 동안 {req:.2f}kg/일 기준을 지킬 선택이 필요합니다."
         else:
-            msg = "오늘은 페이스 점검 구간입니다. 핵심 행동 1개를 먼저 확정하면 흐름을 지킬 수 있습니다."
-    out["daily_message"] = polish_korean_coaching_text(msg)
+            msg = "오늘은 핵심 1개를 먼저 끝내는 쪽이 가장 효과적입니다."
+    out["daily_message"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(msg)))
 
     mode = str(out.get("today_training_mode", "") or "").strip().lower()
     if mode not in {"recovery", "build", "push"}:
@@ -5249,8 +5630,6 @@ def ai_generate_daily_five(date_key, sprint, current_status, context):
     progress = calculate_sprint_progress(sprint, current_status['weight'])
     if not progress:
         return None
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
     dt = datetime.strptime(date_key, '%Y-%m-%d')
     weekday = "Weekday (Work 06-19)" if dt.weekday() < 5 else "Weekend (Free)"
 
@@ -5307,6 +5686,8 @@ DEFAULT_TRAINING_MODE: {default_mode}
 [작성 원칙]
 - available_slots 사실과 모순되지 않아야 합니다.
 - 표현과 전략은 자율적으로 구성하십시오.
+- 중언부언 금지: 같은 의미 반복 금지, 한 문장에 메시지 1개만 담으십시오.
+- 사람 말투로 쓰되, '누구에게나 통하는 일반론' 대신 오늘 데이터와 일정에 박히는 문장으로 쓰십시오.
 - 5개 모두 구체적이고 실행 가능한 과제로 작성하십시오.
 - task_1은 반드시 '현 시점 기준 최우선 과제'로 작성하고, 슬롯이 없으면 대체 방어 과제를 제시하십시오.
 - 각 과제는 "제목(title)" + "실행(description)" 두 요소만 명확히 작성하십시오.
@@ -5318,6 +5699,7 @@ DEFAULT_TRAINING_MODE: {default_mode}
 - 번역투/부자연스러운 표현(예: 과식 차단)을 피하고 자연스러운 한국어를 사용하십시오.
 - 어제 운동 기록이 있으면 강점 1개 + 보완점 1개를 daily_message에 짧게 반영하십시오.
 - today_training_mode는 오늘의 기본 방향(soft anchor)으로 제시하십시오.
+- 출력 본문에 "지금 상황:" 같은 섹션 라벨은 넣지 마십시오.
 - json 객체 1개만 출력하십시오.
 
 [OUTPUT FORMAT - JSON ONLY]
@@ -5339,12 +5721,14 @@ DEFAULT_TRAINING_MODE: {default_mode}
 """
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
+        result = _coaching_json_completion(
+            prompt=prompt,
+            provider=COACHING_PROVIDER,
+            model_openai=COACHING_MODEL_OPENAI,
+            model_anthropic=COACHING_MODEL_ANTHROPIC,
+            max_tokens=1200,
+            temperature=0.6,
         )
-        result = json.loads(response.choices[0].message.content)
         result = _normalize_daily_five_result(result, progress, slots, default_mode)
         return result
 
@@ -5559,75 +5943,60 @@ def ai_generate_daily_checkin(date_key, hrv, rhr, weight, morning_context, calen
         out["condition_signal"] = signal.capitalize()
 
         pace = str((sprint_progress or {}).get("pace_status", "") or "").strip().lower()
-        day_no = _safe_int((sprint_progress or {}).get("day"), 0)
-        days_left = _safe_int((sprint_progress or {}).get("days_remaining"), 0)
         gap = _safe_float((sprint_progress or {}).get("weight_delta"), None)
         req = _safe_float((sprint_progress or {}).get("required_daily_pace"), None)
 
         headline = str(out.get("headline", "") or "").strip()
-        if not headline:
-            if (pace == "behind") and (gap is not None) and (gap > 0):
-                headline = f"오늘은 복구 우선 구간입니다. Day {day_no} 기준 격차 관리가 핵심입니다."
-            elif signal == "red":
-                headline = "오늘은 회복 우선 구간입니다. 무리한 강도보다 리듬 복구가 우선입니다."
-            elif signal == "green":
-                headline = "오늘은 밀어도 되는 구간입니다. 다만 저녁 변수만 막으면 됩니다."
-            else:
-                headline = "오늘은 관리 구간입니다. 점심·저녁 선택이 체중 흐름을 좌우합니다."
-
         reason = str(out.get("headline_reason", "") or "").strip()
-        if not reason:
-            reason = f"현재 지표는 HRV {hrv:.0f}, RHR {rhr:.0f}, 체중 {weight:.1f}kg 기준입니다."
-
         analysis = str(out.get("analysis", "") or "").strip()
-        if not analysis:
-            analysis = "아침 지표와 최근 기록을 보면, 오늘은 선택 1~2개가 내일 체중 반등폭을 결정하는 구간입니다."
-
-        vitals_line = f"현재 지표는 HRV {hrv:.0f}, RHR {rhr:.0f}, 체중 {weight:.1f}kg입니다."
-        if ("HRV" not in analysis) and ("RHR" not in analysis) and ("체중" not in analysis):
-            analysis = f"{vitals_line} {analysis}".strip()
-
-        if sprint_progress:
-            if (pace == "behind") and (gap is not None) and (gap > 0):
-                if req is not None:
-                    sprint_line = (
-                        f"스프린트 Day {day_no} 기준 목표 대비 {gap:.2f}kg 뒤처져 있고, "
-                        f"남은 {days_left}일 동안 하루 {req:.2f}kg 페이스가 필요합니다."
-                    )
-                else:
-                    sprint_line = f"스프린트 Day {day_no} 기준 목표 대비 {gap:.2f}kg 뒤처진 상태입니다."
-            elif pace == "on-track":
-                sprint_line = f"스프린트 Day {day_no} 기준 현재는 유지 구간이며, 남은 {days_left}일 관리가 핵심입니다."
-            elif pace == "ahead":
-                sprint_line = f"스프린트 Day {day_no} 기준 현재는 앞선 구간이며, 남은 {days_left}일은 방어 관리가 핵심입니다."
-            else:
-                sprint_line = ""
-            if sprint_line and ("스프린트" not in analysis):
-                analysis = f"{analysis} {sprint_line}".strip()
-
-        if ("손해" not in analysis) and ("위험" not in analysis):
-            if (pace == "behind") and (gap is not None) and (gap > 0):
-                analysis = (
-                    f"{analysis} 지금 점심·저녁에서 탄수와 염분이 흔들리면 {gap:.2f}kg 격차가 내일 체중으로 고정될 손해가 있습니다."
-                ).strip()
-            else:
-                analysis = f"{analysis} 오늘 식사 리듬이 흔들리면 내일 체중 반등폭이 커지는 손해가 생길 수 있습니다.".strip()
-        if not _contains_positive_signal(analysis):
-            analysis = f"{analysis} 반대로 오늘 점심을 안정시키면 저녁 폭식과 붓기를 줄여 내일 수치 방어에 유리합니다.".strip()
-
         workout = str(out.get("mission_workout", "") or "").strip()
         diet = str(out.get("mission_diet", "") or "").strip()
         recovery = str(out.get("mission_recovery", "") or "").strip()
 
-        if not _df_has_concrete_detail(workout):
-            if "Workday" in str(work_constraint):
-                workout = "퇴근 후 가능한 슬롯 1개를 고정해 20~30분 걷기 1회를 완료하세요. 슬롯이 없으면 귀가 후 10분 스트레칭으로 대체하세요."
+        if not headline:
+            if (pace == "behind") and (gap is not None) and (gap > 0):
+                headline = f"오늘은 복구 모드가 필요합니다. 현재 격차 {gap:.2f}kg를 더 키우지 않는 게 우선입니다."
+            elif signal == "red":
+                headline = "오늘은 무리하지 말고 회복 우선으로 가는 날입니다."
+            elif signal == "green":
+                headline = "오늘은 밀어도 되는 상태입니다. 핵심 1~2개만 확실히 실행하면 됩니다."
             else:
-                workout = "오전 또는 오후 여유 시간에 30~40분 유산소 1회를 먼저 끝내고, 남으면 10분 코어를 추가하세요."
+                headline = "오늘은 선택 하나가 내일 컨디션을 바꾸는 구간입니다."
+
+        if not reason:
+            reason = f"현재 지표는 HRV {hrv:.0f}, RHR {rhr:.0f}, 체중 {weight:.1f}kg 기준입니다."
+
+        if not analysis:
+            analysis = "최근 기록을 보면 오늘은 식사와 운동 타이밍을 단순하게 잡는 편이 유리합니다."
+        if ("HRV" not in analysis) and ("RHR" not in analysis) and ("체중" not in analysis):
+            analysis = f"{analysis} (현재 지표: HRV {hrv:.0f}, RHR {rhr:.0f}, 체중 {weight:.1f}kg)"
+
+        if ("손해" not in analysis) and ("위험" not in analysis):
+            if (pace == "behind") and (gap is not None) and (gap > 0):
+                req_txt = f", 남은 필요 페이스 {req:.2f}kg/일" if req is not None else ""
+                analysis = f"{analysis} 오늘 식사/운동이 흔들리면 격차 {gap:.2f}kg{req_txt} 구간이 더 악화될 손해가 있습니다."
+            else:
+                analysis = f"{analysis} 오늘 루틴이 흔들리면 내일 붓기 반등이 커지는 손해가 생길 수 있습니다."
+        if not _contains_positive_signal(analysis):
+            analysis = f"{analysis} 반대로 오늘 한 끼만 정리해도 내일 수치가 확실히 가벼워질 가능성이 큽니다."
+
+        if not workout:
+            workout = (
+                "퇴근 후 가능한 슬롯 1개를 고정해 20~30분만 움직이세요."
+                if "Workday" in str(work_constraint)
+                else "오전/오후 중 가능한 시간대에 30분 내외 유산소 1회를 먼저 끝내세요."
+            )
+        if not diet:
+            diet = "점심은 단백질·채소 중심으로 두고 밥/면/튀김은 한 번 쉬어가세요."
+        if not recovery:
+            recovery = "취침 전 5분 스트레칭과 마그네슘 1정으로 회복 루틴을 고정하세요."
+
+        if not _df_has_concrete_detail(workout):
+            workout = f"{workout} (예: 20~30분 1회)"
         if not _df_has_concrete_detail(diet):
-            diet = "점심은 단백질+채소 1끼로 고정하고 밥·면·튀김은 제외하세요. 저녁은 추가 탄수 없이 단백질 소량으로 마무리하세요."
+            diet = f"{diet} (예: 탄수 추가 없이 1끼)"
         if not _df_has_concrete_detail(recovery):
-            recovery = "오후에는 수분을 나눠서 총 300~500ml만 보충하고, 취침 30분 전 마그네슘 1정과 5분 스트레칭으로 회복 루틴을 고정하세요."
+            recovery = f"{recovery} (예: 5~10분)"
 
         out["headline"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(headline)))
         out["headline_reason"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(reason)))
@@ -5637,7 +6006,6 @@ def ai_generate_daily_checkin(date_key, hrv, rhr, weight, morning_context, calen
         out["mission_recovery"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(recovery)))
         return out
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
     dt = datetime.strptime(date_key, '%Y-%m-%d')
     wc = "Workday(06-19 Work). No heavy gym during work." if dt.weekday() < 5 else "Weekend. Free."
     sprint_progress = None
@@ -5681,12 +6049,15 @@ SprintContext: {sprint_ctx_json}
 [출력 원칙]
 - 입력 사실과 모순되지 마십시오.
 - 해석과 코칭 표현은 자율적으로 구성하십시오.
+- 중언부언 금지: 같은 의미 반복 금지, 문장당 한 가지 메시지만 전달하십시오.
+- 사람 말투로 쓰되, '누구에게나 통하는 일반론' 대신 오늘 데이터에 꽂히는 문장으로 작성하십시오.
 - analysis에는 현재 지표(HRV/RHR/체중 중 1개 이상)와 스프린트 맥락(격차/남은일/필요페이스 중 1개 이상)을 포함하십시오.
 - analysis에는 반드시 아래 2문장을 포함하십시오.
   1) 지금 안 하면 생기는 손해
   2) 지금 하면 좋아지는 점
 - mission_workout/mission_diet/mission_recovery는 각각 시간대/행동/분량 중 최소 2개를 담은 실행문으로 작성하십시오.
 - "관리하세요", "신경쓰세요", "준비하세요" 같은 모호한 문장만 단독으로 쓰지 마십시오.
+- "지금 상황:", "현 시점 제안:" 같은 섹션 라벨은 출력에 넣지 마십시오.
 - json 객체 1개만 출력하십시오.
 
 Output JSON: {{
@@ -5700,12 +6071,14 @@ Output JSON: {{
 }}
 """
     try:
-        res = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role":"user","content":prompt}],
-            response_format={"type":"json_object"}
+        raw = _coaching_json_completion(
+            prompt=prompt,
+            provider=COACHING_PROVIDER,
+            model_openai=COACHING_MODEL_OPENAI,
+            model_anthropic=COACHING_MODEL_ANTHROPIC,
+            max_tokens=1000,
+            temperature=0.6,
         )
-        raw = json.loads(res.choices[0].message.content)
         return _normalize_daily_checkin_result(raw, sprint_progress, wc)
     except Exception as e:
         fallback = {
@@ -5734,7 +6107,6 @@ def ai_generate_action_plan_cached(hrv, rhr, weight, date_key, slots_key, activi
     return result
 
 def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, available_slots):
-    client = OpenAI(api_key=OPENAI_API_KEY)
     now_kst = get_current_kst()
 
     try:
@@ -5908,95 +6280,76 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 {north_star_context}
 {korean_style_context}
 
-역할: 실시간 코칭 에디터
+역할: 실시간 개인 코치
 언어: 한국어 존댓말
 
-[섹션 목표]
-- Action Plan은 현 시점 맥락(일정·피로·섭취·운동가능시간)에 맞는 우선순위 코칭을 안내해야 합니다.
-- Daily Check-in의 큰 방향을 바탕으로, 오늘 남은 시간에 실현 가능한 코칭을 만듭니다.
-- xC와 스프린트 마일스톤 달성 확률을 높이는 방향으로 제안합니다.
-- 응원/독려/경고 톤은 상황에 맞게 자율적으로 조절하십시오.
-- 최우선 목적은 분석 전시가 아니라 행동 변화 유도입니다.
-- persona_context의 캐릭터/말투/호칭 규칙을 일관되게 준수하십시오.
-- 번역투 대신 자연스러운 한국어 구어체 존댓말을 사용하십시오.
-- 모호한 표현(예: "자유 슬롯", "좀 더 준비", "건강한 메뉴")은 피하고, 구체적 표현을 사용하십시오.
-- 코칭은 반드시 "지금 사용자 상태"에 맞춰 작성하십시오(일정/섭취/운동여건/격차 반영).
-- 일반론을 금지합니다. 같은 조언이라도 "지금 이 사용자에게 생기는 손해/이득"을 연결해 설명하십시오.
-- 식사·음주 리스크가 이미 기록된 날에는 경고 강도를 높여도 됩니다. 단, 과도한 모욕·비난은 금지합니다.
-- next_actions는 고정 템플릿을 따르지 말고, 상황에 맞는 문장 구조를 자율적으로 선택하십시오.
-- '지금 당장' 실행 강요 문구를 남발하지 말고, 현 시점 판단 기준과 선택 이유를 함께 제시하십시오.
-- 가능하면 시간/행동/분량 중 2개 이상을 포함해 실행 가능성을 높이십시오.
+핵심 원칙:
+- 사용자는 "누구나 해당되는 일반론"을 싫어합니다. 지금 이 사람의 오늘 상태에 맞게 말하십시오.
+- 데이터 해석은 날카롭게, 말투는 사람답고 자연스럽게 작성하십시오.
+- 중언부언 금지: 같은 의미 반복 금지, 짧고 명확하게.
+- 모호한 표현 금지: "자유 슬롯", "준비하세요", "건강한 메뉴" 같은 추상어를 쓰지 마십시오.
+- 식사/음주 리스크가 실제로 있으면 강도 높은 피드백을 허용합니다(모욕/비난 금지).
+- 하드 템플릿 문장을 복붙하지 말고 상황에 맞게 자율적으로 구성하십시오.
+- 섹션 헤더 문구(예: "지금 상황:", "현 시점 제안:", "핵심:")를 본문에 다시 쓰지 마십시오.
+- "HH:MM 기준" 같은 시각 표기를 본문에 넣지 마십시오. 상단 배지 시각만 사용합니다.
+- 어제가 정크푸드/음주 손실일이면 current_analysis 첫 문장에서 그 손실과 오늘 메이크업 필요성을 분명히 말하십시오.
 
-[최소 가드레일]
-- daily_state 사실과 모순되지 마십시오.
-- 캘린더 원문이 아니라 available_slots만 사실로 사용하십시오.
-- available_slots에서 active_now=true 슬롯이 없으면 현재 불가능한 행동을 확정 지시하지 마십시오.
-- late_mode=true 또는 enabled 슬롯이 거의 없으면 무리한 플랜 대신 현실적 마무리 행동을 우선 제안하십시오.
-- dinner_done=true일 때는 '저녁 식사' 지시보다 '추가 섭취/야식 관리' 중심으로 제안하십시오.
-- 내일/다음날 계획 자체를 금지하지는 않되, 오늘 판단·행동을 우선으로 두십시오.
-- 운동 유형은 하드코딩된 코드/템플릿 대신 캘린더와 오늘 로그를 근거로 자율 제안하십시오.
-- json 객체 1개만 출력하십시오.
+작성 가이드:
+- current_analysis: 2~4문장. "왜 오늘이 이런 상태인지"를 현재 데이터로 설명.
+- next_actions: 3~5줄. 각 줄은 실행 가능한 행동 1개 + 이유(손해/이득) 포함.
+- warnings: 리스크가 있을 때만 1~2문장. 없으면 빈 문자열.
+- 캘린더/시간 관련 내용은 available_slots와 daily_state 사실만 사용.
+- 최근 로그에 정크푸드/음주가 있으면, current_analysis 첫 문장에서 그 사실과 오늘 손실을 짧게 명시하십시오.
 
-[COACHING_CONTEXT]
-- heuristic_mode: {coaching_mode}
-- xc_value_kg: {xc_value}
+현재 컨텍스트:
+- coaching_mode: {coaching_mode}
+- xc: {xc_value}
 - xc_reason: {xc_reason_json}
 - urgency: {urgency_json}
 - intake_kcal_today: {kcal_now}
 - kcal_target_today: {kcal_target_today}
 - kcal_delta_today: {kcal_delta_today}
 - kcal_balance_status: {kcal_balance_status}
-- repeat_bad_food_days_d2_to_d0: {repeat_bad_food_days}
+- repeat_bad_food_days(d2~d0): {repeat_bad_food_days}
 - repeat_bad_food_tags: {repeat_bad_food_tags_json}
 
-[YESTERDAY_WORKOUT_REVIEW]
+YESTERDAY_WORKOUT_REVIEW:
 {yesterday_workout_review_json}
 
-[PREV_XC_FEEDBACK]
+PREV_XC_FEEDBACK:
 {prev_xc_feedback_json}
-- gap_kg가 양수면 전일 xC 미달입니다.
-- 해당 경우 warnings에 1문장 경고를 포함하십시오.
 
-[TRAINING_ANCHOR]
+TRAINING_ANCHOR:
 {training_anchor_json}
-- training_anchor.mode는 오늘 코칭의 기본 방향(soft anchor)입니다.
-- 다만 시간/슬롯/컨디션 등 현실 데이터가 바뀌면 mode를 유연하게 조정할 수 있습니다.
-- mode를 조정했다면 next_actions에 이유를 1문장으로 명시하십시오.
 
-[SPRINT_STATUS]
+SPRINT_STATUS:
 {sprint_status_json}
 
-[DAILY_FIVE_STATUS]
+DAILY_FIVE_STATUS:
 {daily_five_status_json}
 
-[DAILY_FIVE_FOCUS]
+DAILY_FIVE_FOCUS:
 {daily_five_focus_json}
-- remaining_count > 0 이면 next_actions에 남은 DF 중 1개를 우선순위로 직접 지목하십시오.
 
-[DAILY_STATE]
+DAILY_STATE:
 {daily_state_json}
 
-[TODAY_LOG_EVIDENCE_FULL]
+TODAY_LOG_EVIDENCE:
 {logs_text_today}
 
-[RECENT_LOG_EVIDENCE_D2_D1_D0_NEWEST_FIRST]
+RECENT_LOG_EVIDENCE:
 {logs_text_recent}
 
-[OUTPUT FORMAT - JSON]
+반드시 JSON 객체 1개만 출력:
 {{
-  "current_analysis": "현재 상황 해석 (1~3문장)",
-  "next_actions": "현 시점 맞춤 코칭 본문. 여러 줄 가능.",
-  "warnings": "리스크/경고가 있으면 작성, 없으면 빈 문자열"
+  "current_analysis": "string",
+  "next_actions": "string",
+  "warnings": "string"
 }}
 """
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        result = json.loads(response.choices[0].message.content)
+        result = _action_plan_chat_completion_json(prompt)
         result = validate_action_plan_output(result, daily_state)
 
         now_kst2 = get_current_kst()
@@ -6017,6 +6370,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
             "current_analysis": fallback.get("current_analysis", "AI 호출 실패"),
             "next_actions": fallback.get("next_actions", ""),
             "warnings": fallback.get("warnings", ""),
+            "fallback_mode": "ai_error",
             "generated_at": now_kst2.strftime('%H:%M'),
             "generated_hours_left": 24 - now_kst2.hour
         }
@@ -6293,9 +6647,11 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
     if not txt:
         return {"coach_reply": "", "plan_patch": {"enabled": False, "changes": []}}
 
-    if not OPENAI_API_KEY:
+    provider = _resolve_provider(COACHING_PROVIDER)
+    if not _coaching_has_provider_key(provider):
+        provider_name = "Claude" if provider == "anthropic" else "OpenAI"
         return {
-            "coach_reply": "OpenAI API 키가 없어 상담을 생성하지 못했습니다.",
+            "coach_reply": f"{provider_name} API 키가 없어 상담을 생성하지 못했습니다.",
             "plan_patch": {"enabled": False, "changes": []},
         }
 
@@ -6314,12 +6670,24 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
     wants_patch = _pitwall_wants_patch(txt)
     patch_targets = _extract_df_task_targets(txt)
     patch_targets_json = json.dumps(patch_targets, ensure_ascii=False)
-    chat_model = str(st.secrets.get("PITWALL_CHAT_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip() or "gpt-4o-mini"
-    patch_model = str(st.secrets.get("PITWALL_PATCH_MODEL", "gpt-4o") or "gpt-4o").strip() or "gpt-4o"
+    chat_model_openai = str(
+        st.secrets.get("PITWALL_CHAT_MODEL_OPENAI", st.secrets.get("PITWALL_CHAT_MODEL", "gpt-4o-mini"))
+        or "gpt-4o-mini"
+    ).strip() or "gpt-4o-mini"
+    patch_model_openai = str(
+        st.secrets.get("PITWALL_PATCH_MODEL_OPENAI", st.secrets.get("PITWALL_PATCH_MODEL", "gpt-4o"))
+        or "gpt-4o"
+    ).strip() or "gpt-4o"
+    chat_model_anthropic = str(
+        st.secrets.get("PITWALL_CHAT_MODEL_ANTHROPIC", st.secrets.get("PITWALL_CHAT_MODEL", COACHING_MODEL_ANTHROPIC))
+        or COACHING_MODEL_ANTHROPIC
+    ).strip() or COACHING_MODEL_ANTHROPIC
+    patch_model_anthropic = str(
+        st.secrets.get("PITWALL_PATCH_MODEL_ANTHROPIC", st.secrets.get("PITWALL_PATCH_MODEL", COACHING_MODEL_ANTHROPIC))
+        or COACHING_MODEL_ANTHROPIC
+    ).strip() or COACHING_MODEL_ANTHROPIC
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-
         if not wants_patch:
             prompt = f"""
 {persona_context}
@@ -6347,12 +6715,14 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
 [상태 컨텍스트 JSON]
 {context_json}
 """
-            response = client.chat.completions.create(
-                model=chat_model,
-                messages=[{"role": "user", "content": prompt}],
+            coach_reply = _coaching_text_completion(
+                prompt=prompt,
+                provider=provider,
+                model_openai=chat_model_openai,
+                model_anthropic=chat_model_anthropic,
                 max_tokens=420,
+                temperature=0.6,
             )
-            coach_reply = str(response.choices[0].message.content or "").strip()
             if not coach_reply:
                 coach_reply = "오늘 남은 DF 항목 중 최우선 1개를 먼저 확정하고, 가능한 시간대에 20분 단위로 마무리해 주세요."
             coach_reply = _normalize_pitwall_reply_text(coach_reply, compact_context)
@@ -6407,13 +6777,14 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
   }}
 }}
 """
-        response = client.chat.completions.create(
-            model=patch_model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
+        result = _coaching_json_completion(
+            prompt=prompt,
+            provider=provider,
+            model_openai=patch_model_openai,
+            model_anthropic=patch_model_anthropic,
             max_tokens=900,
+            temperature=0.6,
         )
-        result = json.loads(response.choices[0].message.content)
     except Exception as e:
         return {
             "coach_reply": f"상담 생성 중 오류가 발생했습니다: {e}",
@@ -7214,7 +7585,6 @@ def ai_generate_wrapup(kind, payload):
     north_star_context = build_north_star_context()
     korean_style_context = build_korean_style_context()
     payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
-    client = OpenAI(api_key=OPENAI_API_KEY)
 
     if kind == "weekly":
         role_txt = "Weekly Wrap-up 에디터"
@@ -7266,12 +7636,14 @@ def ai_generate_wrapup(kind, payload):
 }}
 """
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
+        result = _coaching_json_completion(
+            prompt=prompt,
+            provider=COACHING_PROVIDER,
+            model_openai=COACHING_MODEL_OPENAI,
+            model_anthropic=COACHING_MODEL_ANTHROPIC,
+            max_tokens=1200,
+            temperature=0.6,
         )
-        result = json.loads(response.choices[0].message.content)
         result["generated_at"] = get_current_kst().strftime("%H:%M")
         result = _normalize_wrapup_result(result, kind)
         result = apply_wrapup_consistency_guard(result, kind, payload)
@@ -8516,8 +8888,6 @@ with tab2:
                             display_title = polish_korean_coaching_text(str(task.get("title", "") or "").strip())
                             display_desc = polish_korean_coaching_text(str(task.get("description", "") or "").strip())
                             display_why = polish_korean_coaching_text(str(task.get("why", "") or "").strip())
-                            if display_desc and (not display_desc.startswith("실행:")):
-                                display_desc = f"실행: {display_desc}"
                             if done:
                                 bg_color = "#111a2b"
                                 title_color = "#cbd5e1"

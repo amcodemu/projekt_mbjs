@@ -1,6 +1,6 @@
 # 민감한 파일
 service_account.json
-.streamlit/
+.streamlit/secrets.toml
 
 # Python
 __pycache__/
