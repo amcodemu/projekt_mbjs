@@ -1367,7 +1367,12 @@ def _resolve_dashboard_vitals(df_health, date_key=None):
 def _get_health_last_update_badge(df_health, default_dt=None):
     """
     Health_Log 기준 업데이트 배지(HH:MM)를 계산한다.
-    우선순위: Date+Time -> Date -> Hour_Key -> 기본(now).
+    우선순위:
+    1) Updated_At(실제 수집/반영 시각)
+    2) Date+Time
+    3) Date
+    4) Hour_Key
+    5) 기본(now)
     """
     base_dt = default_dt if isinstance(default_dt, datetime) else get_current_kst()
     default_badge = base_dt.strftime("%H:%M")
@@ -1377,9 +1382,17 @@ def _get_health_last_update_badge(df_health, default_dt=None):
 
     try:
         df = df_health.copy()
+        # 1) 실제 동기화 반영 시각(Updated_At) 우선
+        if "Updated_At" in df.columns:
+            ts_updated = pd.to_datetime(df["Updated_At"], errors="coerce")
+            valid_updated = ts_updated.dropna()
+            if not valid_updated.empty:
+                return valid_updated.max().strftime("%H:%M")
+
         if "Date" not in df.columns:
             return default_badge
 
+        # 2) 보조: Date/Time 조합
         date_part = df["Date"].astype(str).str.strip()
         if "Time" in df.columns:
             time_part = df["Time"].astype(str).str.strip()
@@ -8534,7 +8547,7 @@ with tab1:
             last_updated_badge = _get_health_last_update_badge(df_h, now_kst)
 
             st.markdown(
-                f"""<h3 style="margin-bottom: 10px;">Real-time Bio-Stat <span class="time-badge">{last_updated_badge} 업데이트</span></h3>""",
+                f"""<h3 style="margin-bottom: 10px;">Real-time Bio-Stat <span class="time-badge">{last_updated_badge} 기준</span></h3>""",
                 unsafe_allow_html=True,
             )
 
