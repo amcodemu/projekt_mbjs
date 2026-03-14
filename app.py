@@ -2361,11 +2361,59 @@ def get_active_sprint():
                     'start_date': datetime.strptime(sprint['Start_Date'], '%Y-%m-%d').replace(tzinfo=KST),
                     'end_date': datetime.strptime(sprint['End_Date'], '%Y-%m-%d').replace(tzinfo=KST),
                     'duration_days': int(sprint['Duration_Days']),
-                    'description': sprint.get('Description', '')
+                    'description': sprint.get('Description', sprint.get('Descriptions', ''))
                 }
         return None
     except Exception as e:
         print(f"Error getting active sprint: {e}")
+        return None
+
+
+@st.cache_data(ttl=900)
+def get_latest_ended_sprint(reference_date_key=None):
+    """
+    reference_date 이전(당일 제외)에 종료된 sprint 중 가장 최근 sprint를 반환한다.
+    """
+    try:
+        records = fetch_sheet_data("Sprints")
+        if not records:
+            return None
+        if reference_date_key:
+            ref_date = _safe_parse_ymd(reference_date_key)
+        else:
+            ref_date = get_current_kst().date()
+        if ref_date is None:
+            ref_date = get_current_kst().date()
+
+        picked = None
+        picked_end = None
+        for sprint in records:
+            end_date = _safe_parse_ymd(sprint.get("End_Date", ""))
+            start_date = _safe_parse_ymd(sprint.get("Start_Date", ""))
+            if not end_date:
+                continue
+            if end_date >= ref_date:
+                continue
+            if (picked_end is None) or (end_date > picked_end):
+                dur = _safe_int(sprint.get("Duration_Days", 0), 0)
+                if dur <= 0 and start_date:
+                    dur = int((end_date - start_date).days + 1)
+                picked = {
+                    "sprint_id": str(sprint.get("Sprint_ID", "") or "").strip(),
+                    "name": str(sprint.get("Name", "") or "").strip(),
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "duration_days": int(dur),
+                    "status": str(sprint.get("Status", "") or "").strip().lower(),
+                    "description": str(sprint.get("Description", sprint.get("Descriptions", "")) or "").strip(),
+                    "result": str(sprint.get("Result", "") or "").strip().lower(),
+                    "final_wt": _safe_float(sprint.get("Final_Wt"), None),
+                    "closed_at": str(sprint.get("Closed_At", "") or "").strip(),
+                }
+                picked_end = end_date
+        return picked
+    except Exception as e:
+        print(f"Error getting latest ended sprint: {e}")
         return None
 
 @st.cache_data(ttl=3600)
@@ -2425,8 +2473,10 @@ def _latest_weight_on_or_before(df_health, cutoff_date):
 
 def auto_close_ended_sprints():
     """
-    종료일이 지난 active sprint를 done으로 자동 전환하고,
-    목표 달성 여부(success/fail)를 Sprints 시트에 기록한다.
+    Sprints.Status를 날짜 기준으로 자동 동기화한다.
+    - 시작 전: pending
+    - 기간 내: active
+    - 종료 후: done (+ result/final_wt/closed_at 보정)
     """
     try:
         sh_s = get_db_connection("Sprints")
@@ -2479,29 +2529,50 @@ def auto_close_ended_sprints():
         updated = 0
         for row_num, r in enumerate(rows, start=2):
             status = str(r.get("Status", "")).strip().lower()
-            if status != "active":
-                continue
-
+            desired_status = status
+            start_date = _safe_parse_ymd(r.get("Start_Date", ""))
             end_date = _safe_parse_ymd(r.get("End_Date", ""))
-            if not end_date:
-                continue
-            if today_kst <= end_date:
-                continue
+            if start_date and (today_kst < start_date):
+                desired_status = "pending"
+            elif start_date and end_date and (start_date <= today_kst <= end_date):
+                desired_status = "active"
+            elif end_date and (today_kst > end_date):
+                desired_status = "done"
+
+            update_map = {}
+            if desired_status != status:
+                update_map["Status"] = desired_status
 
             sprint_id = str(r.get("Sprint_ID", "")).strip()
-            target_wt = target_by_sprint.get(sprint_id)
-            final_wt = _latest_weight_on_or_before(df_health, end_date)
+            if desired_status == "done":
+                target_wt = target_by_sprint.get(sprint_id)
+                final_wt = _latest_weight_on_or_before(df_health, end_date)
+                if (target_wt is not None) and (final_wt is not None):
+                    result = "success" if final_wt <= target_wt else "fail"
+                else:
+                    result = "unknown"
 
-            if (target_wt is not None) and (final_wt is not None):
-                result = "success" if final_wt <= target_wt else "fail"
-            else:
-                result = "unknown"
+                result_now = str(r.get("Result", "")).strip().lower()
+                if result_now != result:
+                    update_map["Result"] = result
+
+                final_txt = f"{final_wt:.1f}" if final_wt is not None else ""
+                final_now = str(r.get("Final_Wt", "")).strip()
+                if final_now != final_txt:
+                    update_map["Final_Wt"] = final_txt
+
+                closed_now = str(r.get("Closed_At", "")).strip()
+                # done 최초 전환 시점 또는 비어있을 때만 종료 시각 기록
+                if (not closed_now) and ((status != "done") or ("Status" in update_map)):
+                    update_map["Closed_At"] = now_str
+
+            if not update_map:
+                continue
 
             try:
-                sh_s.update_cell(row_num, col_idx["Status"], "done")
-                sh_s.update_cell(row_num, col_idx["Result"], result)
-                sh_s.update_cell(row_num, col_idx["Final_Wt"], f"{final_wt:.1f}" if final_wt is not None else "")
-                sh_s.update_cell(row_num, col_idx["Closed_At"], now_str)
+                for key, value in update_map.items():
+                    if key in col_idx:
+                        sh_s.update_cell(row_num, col_idx[key], value)
                 updated += 1
             except Exception as e:
                 print("auto close sprint: update row error:", e)
@@ -2511,6 +2582,7 @@ def auto_close_ended_sprints():
                 fetch_sheet_data.clear()
                 get_active_sprint.clear()
                 get_sprint_goals.clear()
+                get_latest_ended_sprint.clear()
             except:
                 pass
         return updated
@@ -7768,6 +7840,420 @@ def get_or_create_wrapup(kind, cache_key, payload):
     return result
 
 
+def _iter_date_keys(start_key, end_key):
+    try:
+        s = datetime.strptime(str(start_key), "%Y-%m-%d").date()
+        e = datetime.strptime(str(end_key), "%Y-%m-%d").date()
+    except Exception:
+        return []
+    if e < s:
+        return []
+    out = []
+    cur = s
+    while cur <= e:
+        out.append(cur.strftime("%Y-%m-%d"))
+        cur += timedelta(days=1)
+    return out
+
+
+def build_sprint_retro_payload(sprint, df_health, df_action):
+    if not sprint:
+        return {}
+    start_date = sprint.get("start_date")
+    end_date = sprint.get("end_date")
+    if not start_date or not end_date:
+        return {}
+    start_key = start_date.strftime("%Y-%m-%d")
+    end_key = end_date.strftime("%Y-%m-%d")
+    date_keys = _iter_date_keys(start_key, end_key)
+    if not date_keys:
+        return {}
+
+    action_summary = summarize_action_range(df_action, start_key, end_key)
+    health_summary = summarize_health_range(
+        df_health,
+        start_key,
+        end_key,
+        _safe_float(sprint.get("final_wt"), 0.0),
+        0.0,
+        0.0,
+    )
+
+    weight_by_date = {k: None for k in date_keys}
+    hrv_by_date = {k: None for k in date_keys}
+    rhr_by_date = {k: None for k in date_keys}
+    if df_health is not None and (not df_health.empty) and ("Date" in df_health.columns):
+        h = df_health.copy()
+        h["Date_Key"] = pd.to_datetime(h["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        h = h[(h["Date_Key"] >= start_key) & (h["Date_Key"] <= end_key)]
+        if not h.empty:
+            if "Weight" in h.columns:
+                h["Weight_num"] = pd.to_numeric(h["Weight"], errors="coerce")
+            else:
+                h["Weight_num"] = np.nan
+            if "HRV" in h.columns:
+                h["HRV_num"] = pd.to_numeric(h["HRV"], errors="coerce")
+            else:
+                h["HRV_num"] = np.nan
+            if "RHR" in h.columns:
+                h["RHR_num"] = pd.to_numeric(h["RHR"], errors="coerce")
+            else:
+                h["RHR_num"] = np.nan
+            h = h.sort_values(["Date_Key"])
+            for dk, grp in h.groupby("Date_Key"):
+                if dk in weight_by_date:
+                    wv = grp["Weight_num"].dropna()
+                    hv = grp["HRV_num"].dropna()
+                    rv = grp["RHR_num"].dropna()
+                    weight_by_date[dk] = float(wv.iloc[-1]) if not wv.empty else None
+                    hrv_by_date[dk] = float(hv.iloc[-1]) if not hv.empty else None
+                    rhr_by_date[dk] = float(rv.iloc[-1]) if not rv.empty else None
+
+    intake_by_date = {k: 0 for k in date_keys}
+    workout_min_by_date = {k: 0 for k in date_keys}
+    alcohol_by_date = {k: 0 for k in date_keys}
+    if df_action is not None and (not df_action.empty) and ("Date" in df_action.columns):
+        a = df_action.copy()
+        a["Date_Key"] = pd.to_datetime(a["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        a = a[(a["Date_Key"] >= start_key) & (a["Date_Key"] <= end_key)]
+        if not a.empty:
+            for _, row in a.iterrows():
+                dk = str(row.get("Date_Key", "") or "")
+                if dk not in intake_by_date:
+                    continue
+                cat = str(row.get("Category", "") or "")
+                text = str(row.get("User_Input", "") or "")
+                js = _safe_json_obj(row.get("AI_Analysis_JSON", "{}"))
+                if "섭취" in cat:
+                    intake_by_date[dk] += _safe_int(js.get("calories", 0), 0)
+                if "운동" in cat:
+                    dur = _safe_int(js.get("duration", js.get("time", 0)), 0)
+                    if dur <= 0:
+                        dur = _extract_minutes_from_text(text)
+                    workout_min_by_date[dk] += int(max(0, dur))
+                if "음주" in cat:
+                    alcohol_by_date[dk] += 1
+
+    df_comp_rate_by_date = {k: None for k in date_keys}
+    pace_by_date = {k: "" for k in date_keys}
+    try:
+        df_prog = pd.DataFrame(fetch_sheet_data("Daily_Sprint_Progress"))
+        if not df_prog.empty:
+            df_prog["Date_Key"] = pd.to_datetime(df_prog.get("Date", ""), errors="coerce").dt.strftime("%Y-%m-%d")
+            df_prog = df_prog[
+                (df_prog["Date_Key"] >= start_key) &
+                (df_prog["Date_Key"] <= end_key) &
+                (df_prog.get("Sprint_ID", "").astype(str).str.strip() == str(sprint.get("sprint_id", "")).strip())
+            ].copy()
+            if not df_prog.empty:
+                comp = pd.to_numeric(df_prog.get("Completed", 0), errors="coerce").fillna(0)
+                total = pd.to_numeric(df_prog.get("Total", 0), errors="coerce").replace(0, np.nan)
+                rate = (comp / total).replace([np.inf, -np.inf], np.nan)
+                df_prog["Comp_Rate"] = rate
+                for _, row in df_prog.iterrows():
+                    dk = str(row.get("Date_Key", "") or "")
+                    if dk in df_comp_rate_by_date:
+                        rv = _safe_float(row.get("Comp_Rate"), None)
+                        df_comp_rate_by_date[dk] = rv
+                        pace_by_date[dk] = str(row.get("Pace_Status", "") or "").strip().lower()
+    except Exception as e:
+        print("build_sprint_retro_payload progress read error:", e)
+
+    pace_counts = {"ahead": 0, "on-track": 0, "behind": 0}
+    for p in pace_by_date.values():
+        if p in pace_counts:
+            pace_counts[p] += 1
+
+    goal_obj = get_sprint_goals(str(sprint.get("sprint_id", ""))).get("weight", {}) or {}
+    target_weight = _safe_float(goal_obj.get("target_value"), None)
+    start_weight = health_summary.get("start_weight")
+    if start_weight is None:
+        valid_w = [w for w in weight_by_date.values() if w is not None]
+        start_weight = float(valid_w[0]) if valid_w else None
+    if target_weight is None:
+        target_weight = _safe_float(sprint.get("final_wt"), None)
+
+    payload = {
+        "kind": "sprint_retro",
+        "generated_at_kst": get_current_kst().strftime("%Y-%m-%d %H:%M:%S"),
+        "sprint": {
+            "sprint_id": str(sprint.get("sprint_id", "") or ""),
+            "name": str(sprint.get("name", "") or ""),
+            "status": str(sprint.get("status", "") or ""),
+            "start_date": start_key,
+            "end_date": end_key,
+            "duration_days": int(_safe_int(sprint.get("duration_days"), len(date_keys))),
+            "result": str(sprint.get("result", "") or ""),
+            "final_wt": _safe_float(sprint.get("final_wt"), None),
+            "description": str(sprint.get("description", "") or ""),
+            "target_weight": target_weight,
+            "start_weight": start_weight,
+            "closed_at": str(sprint.get("closed_at", "") or ""),
+        },
+        "action_summary": action_summary,
+        "health_summary": health_summary,
+        "series": {
+            "date_keys": date_keys,
+            "weight": [weight_by_date.get(k) for k in date_keys],
+            "hrv": [hrv_by_date.get(k) for k in date_keys],
+            "rhr": [rhr_by_date.get(k) for k in date_keys],
+            "intake_kcal": [int(intake_by_date.get(k, 0) or 0) for k in date_keys],
+            "workout_minutes": [int(workout_min_by_date.get(k, 0) or 0) for k in date_keys],
+            "alcohol_logs": [int(alcohol_by_date.get(k, 0) or 0) for k in date_keys],
+            "df_completion_rate": [df_comp_rate_by_date.get(k) for k in date_keys],
+            "pace_status": [pace_by_date.get(k, "") for k in date_keys],
+        },
+        "pace_counts": pace_counts,
+    }
+    return payload
+
+
+def _normalize_sprint_retro_result(result):
+    out = dict(result or {})
+    out["headline"] = str(out.get("headline", "") or "").strip()
+    out["overview"] = str(out.get("overview", "") or "").strip()
+    insights = out.get("insights", []) or []
+    if not isinstance(insights, list):
+        insights = []
+    out["insights"] = [str(x).strip() for x in insights if str(x).strip()][:5]
+
+    kpt = out.get("keep_problem_try", {}) or {}
+    if not isinstance(kpt, dict):
+        kpt = {}
+    keep = [str(x).strip() for x in (kpt.get("keep", []) or []) if str(x).strip()][:3]
+    problem = [str(x).strip() for x in (kpt.get("problem", []) or []) if str(x).strip()][:3]
+    trys = [str(x).strip() for x in (kpt.get("try", []) or []) if str(x).strip()][:3]
+    out["keep_problem_try"] = {"keep": keep, "problem": problem, "try": trys}
+    out["generated_at"] = str(out.get("generated_at", "") or "").strip() or get_current_kst().strftime("%H:%M")
+    return out
+
+
+def build_rule_based_sprint_retro(payload):
+    sprint = (payload or {}).get("sprint", {}) or {}
+    action = (payload or {}).get("action_summary", {}) or {}
+    health = (payload or {}).get("health_summary", {}) or {}
+    pace_counts = (payload or {}).get("pace_counts", {}) or {}
+
+    start_w = _safe_float(sprint.get("start_weight"), None)
+    target_w = _safe_float(sprint.get("target_weight"), None)
+    end_w = _safe_float(health.get("end_weight"), _safe_float(sprint.get("final_wt"), None))
+    wchg = _safe_float(health.get("weight_change_kg"), None)
+    if (wchg is None) and (start_w is not None) and (end_w is not None):
+        wchg = float(start_w - end_w)
+
+    intake = _safe_int(action.get("intake_kcal", 0), 0)
+    workouts = _safe_int(action.get("workout_sessions", 0), 0)
+    workout_minutes = _safe_int(action.get("workout_minutes", 0), 0)
+    alcohol_logs = _safe_int(action.get("alcohol_logs", 0), 0)
+    df_rates = (payload or {}).get("series", {}).get("df_completion_rate", []) or []
+    valid_df = [float(x) for x in df_rates if x is not None]
+    avg_df = float(np.mean(valid_df)) if valid_df else 0.0
+
+    headline = f"{str(sprint.get('name', '') or 'Sprint')} 회고"
+    overview = (
+        f"{str(sprint.get('start_date', ''))}~{str(sprint.get('end_date', ''))} 동안 "
+        f"체중 변화는 {wchg:+.2f}kg"
+        if wchg is not None else
+        f"{str(sprint.get('start_date', ''))}~{str(sprint.get('end_date', ''))} 회고 데이터입니다."
+    )
+    if (target_w is not None) and (end_w is not None):
+        overview += f", 종료 체중 {end_w:.1f}kg / 목표 {target_w:.1f}kg."
+    else:
+        overview += "."
+    insights = [
+        f"운동 {workouts}회, 총 {workout_minutes}분으로 행동량은 누적되었습니다.",
+        f"음주 로그 {alcohol_logs}건이 체중 반등 리스크를 키웠습니다.",
+        f"DF 평균 완료율은 {avg_df * 100:.0f}%이며, behind 일수는 {int(pace_counts.get('behind', 0))}일입니다.",
+    ]
+
+    keep = []
+    if workouts >= 5:
+        keep.append(f"운동 루틴 유지: 스프린트 기간 {workouts}회({workout_minutes}분).")
+    if avg_df >= 0.6:
+        keep.append(f"일일 실행 유지: DF 평균 완료율 {avg_df * 100:.0f}%.")
+    if alcohol_logs <= 1:
+        keep.append("음주 노출이 낮아 회복 리듬을 크게 해치지 않았습니다.")
+
+    problem = []
+    if alcohol_logs >= 2:
+        problem.append(f"음주 {alcohol_logs}건으로 다음날 붓기/체중 반등이 반복되었습니다.")
+    if int(pace_counts.get("behind", 0)) >= int(max(3, (sprint.get("duration_days", 0) or 0) // 3)):
+        problem.append(f"페이스 뒤처짐이 {int(pace_counts.get('behind', 0))}일 누적되었습니다.")
+    if (wchg is not None) and (wchg <= 0):
+        problem.append(f"체중 변화가 {wchg:+.2f}kg로 목표 감량 흐름을 만들지 못했습니다.")
+
+    trys = []
+    trys.append("다음 스프린트 규칙: 음주 주 1회 이하, 1회 최대 2잔.")
+    trys.append("다음 스프린트 규칙: 점심은 밥/면 대신 단백질+채소 조합을 주 5일 적용.")
+    trys.append("다음 스프린트 규칙: 13일 중 운동 8회 이상, 1회 30분 이상 고정.")
+
+    return _normalize_sprint_retro_result({
+        "headline": headline,
+        "overview": overview,
+        "insights": insights,
+        "keep_problem_try": {
+            "keep": keep[:3],
+            "problem": problem[:3],
+            "try": trys[:3],
+        },
+        "generated_at": get_current_kst().strftime("%H:%M"),
+        "fallback_mode": "rule_based",
+    })
+
+
+def ai_generate_sprint_retro(payload):
+    persona_context = build_common_persona_context()
+    north_star_context = build_north_star_context()
+    korean_style_context = build_korean_style_context()
+    payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
+    prompt = f"""
+{persona_context}
+{north_star_context}
+{korean_style_context}
+
+역할: Sprint 회고 코치
+언어: 한국어 존댓말
+
+[목표]
+- 직전 sprint를 행동 변화 관점으로 회고합니다.
+- 평균값 나열이 아니라, 실제 로그 흐름과 페이스 변화를 해석합니다.
+- keep/problem/try는 각 최대 3개까지만 작성합니다.
+- try는 다음 sprint에 바로 적용할 수 있게 수치/규칙을 포함합니다.
+- 장황한 중복 설명을 피하고, 자연스러운 사람 말투로 작성하십시오.
+
+[입력 사실(JSON)]
+{payload_json}
+
+[출력 형식 - JSON ONLY]
+{{
+  "headline": "짧은 제목",
+  "overview": "종합 총평 3~5문장",
+  "insights": ["핵심 인사이트 1", "핵심 인사이트 2"],
+  "keep_problem_try": {{
+    "keep": ["최대 3개"],
+    "problem": ["최대 3개"],
+    "try": ["최대 3개, 다음 sprint 실행 규칙/수치 포함"]
+  }}
+}}
+"""
+    try:
+        result = _coaching_json_completion(
+            prompt=prompt,
+            provider=COACHING_PROVIDER,
+            model_openai=COACHING_MODEL_OPENAI,
+            model_anthropic=COACHING_MODEL_ANTHROPIC,
+            max_tokens=1400,
+            temperature=0.7,
+        )
+        result = _normalize_sprint_retro_result(result)
+        result["generated_at"] = get_current_kst().strftime("%H:%M")
+        return result
+    except Exception as e:
+        fb = build_rule_based_sprint_retro(payload)
+        fb["fallback_mode"] = "ai_error"
+        fb["overview"] = f"{fb.get('overview', '')}\n{format_ai_error_message(e)}".strip()
+        return fb
+
+
+def get_or_create_sprint_retro(cache_key, payload):
+    kind = "sprint_retro"
+    cached = load_wrapup_cache(kind, cache_key)
+    if cached:
+        return _normalize_sprint_retro_result(cached)
+    result = ai_generate_sprint_retro(payload)
+    if (result or {}).get("fallback_mode") != "ai_error":
+        save_wrapup_cache(kind, cache_key, result)
+        clear_old_caches()
+    return result
+
+
+def render_sprint_retro_block(retro, payload):
+    retro = _normalize_sprint_retro_result(retro)
+    sprint = (payload or {}).get("sprint", {}) or {}
+    series = (payload or {}).get("series", {}) or {}
+    date_keys = list(series.get("date_keys", []) or [])
+    st.markdown(
+        f"""<h3 style="margin-bottom: 10px;">Sprint Retrospective <span class="time-badge">{retro.get('generated_at', get_current_kst().strftime('%H:%M'))} 생성</span></h3>""",
+        unsafe_allow_html=True,
+    )
+    st.caption(f"{str(sprint.get('sprint_id', '')).strip()} · {str(sprint.get('start_date', ''))} ~ {str(sprint.get('end_date', ''))}")
+    with st.container(border=True):
+        headline = str(retro.get("headline", "") or "").strip()
+        if headline:
+            st.markdown(f"**{headline}**")
+        st.markdown(str(retro.get("overview", "") or "-"))
+        insights = retro.get("insights", []) or []
+        if insights:
+            st.markdown("**핵심 인사이트**")
+            for item in insights:
+                st.markdown(f"- {item}")
+
+    if date_keys:
+        weight_vals = series.get("weight", []) or []
+        start_w = _safe_float(sprint.get("start_weight"), None)
+        target_w = _safe_float(sprint.get("target_weight"), None)
+        weight_df = pd.DataFrame({"Date": date_keys, "실측체중": weight_vals})
+        if (start_w is not None) and (target_w is not None) and len(weight_df) > 1:
+            weight_df["목표선"] = np.linspace(start_w, target_w, len(weight_df))
+        weight_df["Date"] = pd.to_datetime(weight_df["Date"], errors="coerce")
+        weight_df = weight_df.set_index("Date")
+        st.markdown("**체중 추이(실측 vs 목표선)**")
+        st.line_chart(weight_df, use_container_width=True)
+
+        behavior_df = pd.DataFrame({
+            "Date": date_keys,
+            "섭취kcal": series.get("intake_kcal", []) or [],
+            "운동분": series.get("workout_minutes", []) or [],
+        })
+        behavior_df["Date"] = pd.to_datetime(behavior_df["Date"], errors="coerce")
+        behavior_df = behavior_df.set_index("Date")
+        st.markdown("**행동 추이(섭취/운동)**")
+        st.bar_chart(behavior_df, use_container_width=True)
+
+        recovery_df = pd.DataFrame({
+            "Date": date_keys,
+            "HRV": series.get("hrv", []) or [],
+            "RHR": series.get("rhr", []) or [],
+        })
+        recovery_df["Date"] = pd.to_datetime(recovery_df["Date"], errors="coerce")
+        recovery_df = recovery_df.set_index("Date")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**HRV 추이**")
+            st.line_chart(recovery_df[["HRV"]], use_container_width=True)
+        with c2:
+            st.markdown("**RHR 추이**")
+            st.line_chart(recovery_df[["RHR"]], use_container_width=True)
+
+    kpt = (retro.get("keep_problem_try", {}) or {})
+    k_keep = list(kpt.get("keep", []) or [])[:3]
+    k_prob = list(kpt.get("problem", []) or [])[:3]
+    k_try = list(kpt.get("try", []) or [])[:3]
+    st.markdown("**Keep / Problem / Try**")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**Keep**")
+        if k_keep:
+            for x in k_keep:
+                st.markdown(f"- {x}")
+        else:
+            st.markdown("- (없음)")
+    with c2:
+        st.markdown("**Problem**")
+        if k_prob:
+            for x in k_prob:
+                st.markdown(f"- {x}")
+        else:
+            st.markdown("- (없음)")
+    with c3:
+        st.markdown("**Try**")
+        if k_try:
+            for x in k_try:
+                st.markdown(f"- {x}")
+        else:
+            st.markdown("- (없음)")
+
+
 def render_wrapup_block(kind, wrapup, xc=None):
     title = "Daily Wrap-up" if kind == "daily" else "Weekly Wrap-up"
     label = "내일 첫 행동" if kind == "daily" else "다음 주 첫 행동"
@@ -8761,7 +9247,33 @@ with tab2:
                 sprint = get_active_sprint()
 
                 if not sprint:
-                    st.info("진행 중인 Sprint가 없습니다")
+                    today_kst = get_current_kst().date()
+                    latest_ended = get_latest_ended_sprint(today_kst.strftime("%Y-%m-%d"))
+                    should_show_retro = (
+                        bool(latest_ended) and
+                        bool(latest_ended.get("end_date")) and
+                        (today_kst == (latest_ended["end_date"] + timedelta(days=1)))
+                    )
+                    if should_show_retro:
+                        df_h_retro = pd.DataFrame(fetch_sheet_data("Health_Log"))
+                        df_action_retro = pd.DataFrame(fetch_sheet_data("Action_Log"))
+                        retro_payload = build_sprint_retro_payload(
+                            latest_ended,
+                            df_h_retro,
+                            df_action_retro,
+                        )
+                        if retro_payload:
+                            retro_cache_key = (
+                                f"{latest_ended.get('sprint_id','')}_"
+                                f"{latest_ended.get('end_date').strftime('%Y-%m-%d')}_"
+                                f"{WRAPUP_CACHE_VERSION}"
+                            )
+                            retro = get_or_create_sprint_retro(retro_cache_key, retro_payload)
+                            render_sprint_retro_block(retro, retro_payload)
+                        else:
+                            st.info("직전 Sprint 회고를 생성할 데이터가 부족합니다.")
+                    else:
+                        st.info("진행 중인 Sprint가 없습니다")
                 else:
                     st.markdown(f"### Sprint: {sprint['name']}")
 
