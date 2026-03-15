@@ -1130,6 +1130,24 @@ def fetch_sheet_data(worksheet_name):
         return []
 
 
+def clear_sheet_cache(worksheet_name=None):
+    """Invalidate sheet cache. If worksheet_name is provided, clear only that key when supported."""
+    try:
+        if worksheet_name:
+            # streamlit cached function supports arg-scoped clear in recent versions.
+            fetch_sheet_data.clear(worksheet_name)
+            return
+    except TypeError:
+        pass
+    except Exception:
+        # Fall back below.
+        pass
+    try:
+        fetch_sheet_data.clear()
+    except Exception:
+        pass
+
+
 def _is_read_quota_error(err):
     s = str(err or "")
     low = s.lower()
@@ -7073,10 +7091,7 @@ def apply_pitwall_plan_patch(sprint_id, plan_patch):
             print("pitwall patch update error:", e)
 
     if updated > 0:
-        try:
-            fetch_sheet_data.clear()
-        except Exception:
-            pass
+        clear_sheet_cache("Action_Log")
         invalidate_dailyfive_local_cache(date_key, sprint_id_str)
         invalidate_realtime_plan_cache(date_key)
         return {
@@ -8876,10 +8891,9 @@ def handle_log_form_submit():
             json.dumps(parsed, ensure_ascii=False),
             ""
         ])
-        try:
-            fetch_sheet_data.clear()
-        except Exception:
-            pass
+        # 액션로그 입력은 전체 캐시를 비우지 않고 Action_Log 키만 무효화해
+        # 탭 전역 재조회 비용(특히 Health_Log/Sprints 재조회)을 줄인다.
+        clear_sheet_cache("Action_Log")
 
         # DF 저장 직후에는 Sprint_Daily_Tasks Completed 동기화를 즉시 수행
         try:
