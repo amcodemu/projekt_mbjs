@@ -3355,6 +3355,10 @@ def _html_escape(v):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _html_escape_multiline(v):
+    return _html_escape(v).replace("\n", "<br>")
+
+
 def _pitwall_resolve_cardio_minutes(row):
     mins = 0
     try:
@@ -5631,6 +5635,7 @@ def format_coaching_readability_markdown(text):
         line = re.sub(r"\s+", " ", raw).strip()
         if not line:
             continue
+        line = line.replace("~", "\\~")
         if line.startswith("- "):
             lines.append(line)
             continue
@@ -5649,6 +5654,8 @@ def format_coaching_readability_markdown(text):
             head, body = line.split(":", 1)
             head = head.strip()
             body = body.strip()
+            head = head.replace("~", "\\~")
+            body = body.replace("~", "\\~")
             # 너무 긴 문장까지 헤딩 처리하지 않도록 제한
             if (1 <= len(head) <= 24) and re.search(r"[가-힣A-Za-z]", head) and (not re.search(r"\d", head)):
                 if body:
@@ -9133,22 +9140,29 @@ with tab1:
                 mission_workout = polish_korean_coaching_text(ck_res.get("mission_workout", "-"))
                 mission_diet = polish_korean_coaching_text(ck_res.get("mission_diet", "-"))
                 mission_recovery = polish_korean_coaching_text(ck_res.get("mission_recovery", "-"))
+                checkin_analysis_html = _html_escape_multiline(checkin_analysis)
+                mission_workout_html = _html_escape_multiline(mission_workout)
+                mission_diet_html = _html_escape_multiline(mission_diet)
+                mission_recovery_html = _html_escape_multiline(mission_recovery)
                 with st.container(border=True):
                     st.markdown(
                         f"""<h3 style="margin:0 0 8px 0;">☀️ Daily Check-in <span class="time-badge">{checkin_time} 생성</span></h3>""",
                         unsafe_allow_html=True,
                     )
                     st.subheader(f"{headline}")
-                    st.markdown(f"**분석:** {checkin_analysis}")
+                    st.markdown(
+                        f"""<div><strong>분석:</strong> {checkin_analysis_html}</div>""",
+                        unsafe_allow_html=True,
+                    )
                     st.write("")
                     st.markdown("**오늘의 전략**")
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        st.markdown(f"""<div class="strategy-box workout-box"><span class="strategy-title">운동</span>{mission_workout}</div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class="strategy-box workout-box"><span class="strategy-title">운동</span>{mission_workout_html}</div>""", unsafe_allow_html=True)
                     with c2:
-                        st.markdown(f"""<div class="strategy-box diet-box"><span class="strategy-title">식단</span>{mission_diet}</div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class="strategy-box diet-box"><span class="strategy-title">식단</span>{mission_diet_html}</div>""", unsafe_allow_html=True)
                     with c3:
-                        st.markdown(f"""<div class="strategy-box recovery-box"><span class="strategy-title">회복</span>{mission_recovery}</div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class="strategy-box recovery-box"><span class="strategy-title">회복</span>{mission_recovery_html}</div>""", unsafe_allow_html=True)
             else:
                 st.info(f"💤 데이터 대기 중 ({date_key})")
 
