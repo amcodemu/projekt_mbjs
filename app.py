@@ -5588,31 +5588,6 @@ def _action_plan_chat_completion_json(prompt):
         parsed = _parse_json_object_from_ai_text(raw)
         if parsed is not None:
             return parsed
-        # 1회 자동 복구: JSON 외 텍스트가 섞인 경우 JSON-only로 재생성
-        repair_prompt = f"""
-아래 텍스트를 의미 손실 없이 JSON object 1개로만 다시 작성하세요.
-- 설명문/코드펜스/추가 텍스트 금지
-- 최상위는 반드시 {{ ... }} 객체
-
-원문:
-{raw}
-"""
-        resp2 = _anthropic_messages_create_with_fallback(
-            client,
-            preferred_model=ACTION_PLAN_MODEL_ANTHROPIC,
-            max_tokens=420,
-            temperature=0.0,
-            messages=[{"role": "user", "content": repair_prompt}],
-        )
-        parts2 = []
-        for b in list(getattr(resp2, "content", []) or []):
-            t = getattr(b, "text", None)
-            if t:
-                parts2.append(str(t))
-        raw2 = "\n".join(parts2).strip()
-        parsed2 = _parse_json_object_from_ai_text(raw2)
-        if parsed2 is not None:
-            return parsed2
         raise RuntimeError("Claude response did not contain JSON object")
 
     client = OpenAI(api_key=OPENAI_API_KEY)
