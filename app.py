@@ -5575,7 +5575,7 @@ def _action_plan_chat_completion_json(prompt):
         resp = _anthropic_messages_create_with_fallback(
             client,
             preferred_model=ACTION_PLAN_MODEL_ANTHROPIC,
-            max_tokens=900,
+            max_tokens=520,
             temperature=0.6,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -5594,6 +5594,7 @@ def _action_plan_chat_completion_json(prompt):
     response = client.chat.completions.create(
         model=ACTION_PLAN_MODEL_OPENAI,
         messages=[{"role": "user", "content": prompt}],
+        max_tokens=520,
         response_format={"type": "json_object"},
     )
     return json.loads(response.choices[0].message.content)
@@ -6447,21 +6448,33 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
     if (not today_logs_full) and today_activities:
         today_logs_full = list(today_activities)
 
-    logs_text_today = "\n".join([f"- {x}" for x in today_logs_full]) if today_logs_full else "- (기록 없음)"
+    def _clip_line(s, n=84):
+        t = str(s or "").strip()
+        if len(t) <= n:
+            return t
+        return t[: n - 1] + "…"
+
+    today_logs_compact = [_clip_line(x, 90) for x in today_logs_full[:6]]
+    logs_text_today = "\n".join([f"- {x}" for x in today_logs_compact]) if today_logs_compact else "- (기록 없음)"
     recent_logs_all = list(recent_evidence.get("recent_logs_newest_first", []) or [])
-    logs_text_recent = "\n".join([f"- {x}" for x in recent_logs_all]) if recent_logs_all else "- (기록 없음)"
+    recent_logs_compact = [_clip_line(x, 90) for x in recent_logs_all[:8]]
+    logs_text_recent = "\n".join([f"- {x}" for x in recent_logs_compact]) if recent_logs_compact else "- (기록 없음)"
     repeat_bad_food_days = int(recent_evidence.get("repeat_bad_food_days", 0) or 0)
-    repeat_bad_food_tags_json = json.dumps(recent_evidence.get("repeat_bad_food_tags", []), ensure_ascii=False)
-    daily_state_json = json.dumps(daily_state, ensure_ascii=False, indent=2)
-    sprint_status_json = json.dumps(sprint_status, ensure_ascii=False, indent=2)
-    daily_five_status_json = json.dumps(daily_five_status, ensure_ascii=False, indent=2)
-    daily_five_focus_json = json.dumps(daily_five_focus, ensure_ascii=False, indent=2)
     yesterday_workout_review = daily_state.get("yesterday_workout_review", {}) or {}
-    yesterday_workout_review_json = json.dumps(yesterday_workout_review, ensure_ascii=False, indent=2)
+    yesterday_workout_compact = {
+        "had_workout": bool(yesterday_workout_review.get("had_workout", False)),
+        "workout_count": int(_safe_int(yesterday_workout_review.get("workout_count", 0), 0)),
+        "total_minutes": int(_safe_int(yesterday_workout_review.get("total_minutes", 0), 0)),
+        "intensity_hint": str(yesterday_workout_review.get("intensity_hint", "none") or "none"),
+        "focus_tags": list(yesterday_workout_review.get("focus_tags", []) or [])[:4],
+    }
+    yesterday_workout_review_json = json.dumps(yesterday_workout_compact, ensure_ascii=False)
     prev_xc_feedback = daily_state.get("prev_xc_feedback", {}) or {}
-    prev_xc_feedback_json = json.dumps(prev_xc_feedback, ensure_ascii=False, indent=2)
-    xc_reason_json = json.dumps(xc_obj.get("xc_reason", []), ensure_ascii=False)
-    urgency_json = json.dumps(urgency_obj, ensure_ascii=False)
+    prev_xc_feedback_compact = {
+        "date": str(prev_xc_feedback.get("date") or ""),
+        "gap_kg": _safe_float(prev_xc_feedback.get("gap_kg"), None),
+    }
+    prev_xc_feedback_json = json.dumps(prev_xc_feedback_compact, ensure_ascii=False)
     intake_obj = daily_state.get("intake_today", {}) or {}
     kcal_now = _safe_int(intake_obj.get("kcal_est_today", 0), 0)
     kcal_target_today = _safe_int(intake_obj.get("kcal_target_today", DEFAULT_DAILY_KCAL_TARGET), DEFAULT_DAILY_KCAL_TARGET)
@@ -6476,6 +6489,57 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
         "source": "daily_five_or_yesterday_review",
     }
     training_anchor_json = json.dumps(training_anchor, ensure_ascii=False)
+    slots_compact_text = slots_to_compact_text(available_slots)
+    slots_compact_lines = [_clip_line(x, 96) for x in str(slots_compact_text or "").splitlines()[:4]]
+    slots_text = "\n".join(slots_compact_lines) if slots_compact_lines else "- (슬롯 없음)"
+    cal_obj = daily_state.get("calendar", {}) or {}
+    daily_five_remaining = int(_safe_int(daily_five_focus.get("remaining_count", 0), 0))
+    daily_five_completed = int(_safe_int(daily_five_focus.get("completed", 0), 0))
+    daily_five_total = int(_safe_int(daily_five_focus.get("total", 0), 0))
+    workout_obj = daily_state.get("workout_done", {}) or {}
+    worked_out_today = bool(workout_obj.get("worked_out_today", False))
+    next_workout_slot = str(workout_obj.get("next_workout_slot") or "")
+    scheduled_workout_title = str(cal_obj.get("scheduled_workout_title") or "")
+    dinner_workout_start = str(cal_obj.get("dinner_workout_start") or "")
+    dinner_workout_end = str(cal_obj.get("dinner_workout_end") or "")
+    latest_action_time = str(daily_state.get("latest_action_time") or "")
+
+    action_plan_context = {
+        "coaching_mode": coaching_mode,
+        "vitals": {"hrv": hrv, "rhr": rhr, "weight": weight},
+        "sprint": {
+            "pace_status": sprint_status.get("pace_status"),
+            "gap_kg": sprint_status.get("weight_delta"),
+            "required_daily_pace": sprint_status.get("required_daily_pace"),
+            "xc": xc_value,
+            "xc_reason": xc_obj.get("xc_reason", []),
+            "urgency": urgency_obj.get("level"),
+        },
+        "intake": {
+            "kcal_today": kcal_now,
+            "kcal_target": kcal_target_today,
+            "kcal_delta": kcal_delta_today,
+            "balance": kcal_balance_status,
+        },
+        "risk": {
+            "repeat_bad_food_days": repeat_bad_food_days,
+            "repeat_bad_food_tags": list(recent_evidence.get("repeat_bad_food_tags", []) or [])[:6],
+        },
+        "workout_today": {
+            "worked_out": worked_out_today,
+            "next_slot": next_workout_slot,
+            "scheduled_title": scheduled_workout_title,
+            "scheduled_window": f"{dinner_workout_start}-{dinner_workout_end}" if dinner_workout_start or dinner_workout_end else "",
+        },
+        "daily_five": {
+            "completed": daily_five_completed,
+            "total": daily_five_total,
+            "remaining": daily_five_remaining,
+            "mode": daily_five_mode,
+        },
+        "latest_action_time": latest_action_time,
+    }
+    action_plan_context_json = json.dumps(action_plan_context, ensure_ascii=False)
     persona_context = build_common_persona_context()
     north_star_context = build_north_star_context()
     korean_style_context = build_korean_style_context()
@@ -6500,44 +6564,30 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 - 어제가 정크푸드/음주 손실일이면 current_analysis 첫 문장에서 그 손실과 오늘 메이크업 필요성을 분명히 말하십시오.
 
 작성 가이드:
-- current_analysis: 2~4문장. "왜 오늘이 이런 상태인지"를 현재 데이터로 설명.
-- next_actions: 3~5줄. 각 줄은 실행 가능한 행동 1개 + 이유(손해/이득) 포함.
+- current_analysis: 2~3문장. "왜 오늘이 이런 상태인지"를 현재 데이터로 설명.
+- next_actions: 3~4줄. 각 줄은 실행 가능한 행동 1개 + 이유(손해/이득) 포함.
 - warnings: 리스크가 있을 때만 1~2문장. 없으면 빈 문자열.
-- 캘린더/시간 관련 내용은 available_slots와 daily_state 사실만 사용.
+- 캘린더/시간 관련 내용은 슬롯/스케줄 사실만 사용.
 - 최근 로그에 정크푸드/음주가 있으면, current_analysis 첫 문장에서 그 사실과 오늘 손실을 짧게 명시하십시오.
+- 길이 제한:
+  * current_analysis: 300자 이내
+  * next_actions: 각 줄 120자 이내
+  * warnings: 120자 이내
 
-현재 컨텍스트:
-- coaching_mode: {coaching_mode}
-- xc: {xc_value}
-- xc_reason: {xc_reason_json}
-- urgency: {urgency_json}
-- intake_kcal_today: {kcal_now}
-- kcal_target_today: {kcal_target_today}
-- kcal_delta_today: {kcal_delta_today}
-- kcal_balance_status: {kcal_balance_status}
-- repeat_bad_food_days(d2~d0): {repeat_bad_food_days}
-- repeat_bad_food_tags: {repeat_bad_food_tags_json}
+현재 컨텍스트(JSON):
+{action_plan_context_json}
 
-YESTERDAY_WORKOUT_REVIEW:
+YESTERDAY_WORKOUT:
 {yesterday_workout_review_json}
 
-PREV_XC_FEEDBACK:
+PREV_XC:
 {prev_xc_feedback_json}
 
 TRAINING_ANCHOR:
 {training_anchor_json}
 
-SPRINT_STATUS:
-{sprint_status_json}
-
-DAILY_FIVE_STATUS:
-{daily_five_status_json}
-
-DAILY_FIVE_FOCUS:
-{daily_five_focus_json}
-
-DAILY_STATE:
-{daily_state_json}
+AVAILABLE_SLOTS:
+{slots_text}
 
 TODAY_LOG_EVIDENCE:
 {logs_text_today}
