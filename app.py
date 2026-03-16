@@ -2014,6 +2014,23 @@ def persist_daily_sprint_progress(date_key, sprint_id, daily_state, daily_five_s
         }
 
         values = [row_data.get(h, "") for h in headers]
+
+        # 렌더링 루프마다 동일 값을 다시 쓰지 않도록 변경 감지.
+        if target_row_num:
+            try:
+                current_row = rows[target_row_num - 2] if (target_row_num - 2) < len(rows) else {}
+                same = True
+                for h in headers:
+                    old_v = str(current_row.get(h, "")).strip()
+                    new_v = str(row_data.get(h, "")).strip()
+                    if old_v != new_v:
+                        same = False
+                        break
+                if same:
+                    return False
+            except Exception:
+                pass
+
         if target_row_num:
             end_col = _a1_col(len(headers))
             sheet.update(
@@ -2024,10 +2041,7 @@ def persist_daily_sprint_progress(date_key, sprint_id, daily_state, daily_five_s
         else:
             sheet.append_row(values, value_input_option="RAW")
 
-        try:
-            fetch_sheet_data.clear()
-        except:
-            pass
+        clear_sheet_cache("Daily_Sprint_Progress")
         return True
     except Exception as e:
         print("persist sprint progress sheet error:", e)
@@ -8909,15 +8923,9 @@ def handle_log_form_submit():
         except Exception as e:
             print("df completion immediate sync error:", e)
 
-        try:
-            # DF 체크 저장은 Action Plan 즉시 재생성 필요도가 낮아 캐시 무효화를 생략한다.
-            if str(category or "").upper() != "DF":
-                d_mission = get_mission_date_key()
-                invalidate_realtime_plan_cache(date_key)
-                if d_mission != date_key:
-                    invalidate_realtime_plan_cache(d_mission)
-        except Exception as _cache_e:
-            print("realtime cache invalidation error:", _cache_e)
+        # 액션로그 저장 직후에는 액션플랜/코칭 캐시를 강제 무효화하지 않는다.
+        # (submit 체감속도 최적화) 계획 재생성은 사용자가 새로고침/재분석 시점에 수행.
+        st.session_state["_realtime_plan_dirty"] = True
 
         st.session_state["_today_summary_nonce"] = get_current_kst().strftime("%Y-%m-%d %H:%M:%S.%f")
         st.session_state["_log_submit_feedback"] = {"ok": True, "msg": "✅ 저장 완료!"}
