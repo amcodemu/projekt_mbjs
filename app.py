@@ -1130,12 +1130,43 @@ def fetch_sheet_data(worksheet_name):
         return []
 
 
+def _health_refresh_bucket(step_min=2):
+    now = get_current_kst()
+    step = max(1, int(step_min))
+    minute = (now.minute // step) * step
+    return f"{now.strftime('%Y-%m-%d %H')}:{minute:02d}"
+
+
+@st.cache_data(ttl=240)
+def _fetch_health_log_data_cached(refresh_bucket):
+    try:
+        sheet = get_db_connection("Health_Log")
+        return _sheet_get_all_records_with_retry(sheet, worksheet_name="Health_Log")
+    except Exception as e:
+        print(f"⚠️ API Error (Health_Log): {e}")
+        return []
+
+
+def fetch_health_log_data():
+    """
+    Health_Log 전용 조회.
+    - 일반 시트는 15분 캐시 유지
+    - Health_Log만 2분 버킷으로 신선도 우선
+    """
+    return _fetch_health_log_data_cached(_health_refresh_bucket(step_min=2))
+
+
 def clear_sheet_cache(worksheet_name=None):
     """Invalidate sheet cache. If worksheet_name is provided, clear only that key when supported."""
     try:
         if worksheet_name:
             # streamlit cached function supports arg-scoped clear in recent versions.
             fetch_sheet_data.clear(worksheet_name)
+            if str(worksheet_name).strip() == "Health_Log":
+                try:
+                    _fetch_health_log_data_cached.clear()
+                except Exception:
+                    pass
             return
     except TypeError:
         pass
@@ -1144,6 +1175,10 @@ def clear_sheet_cache(worksheet_name=None):
         pass
     try:
         fetch_sheet_data.clear()
+    except Exception:
+        pass
+    try:
+        _fetch_health_log_data_cached.clear()
     except Exception:
         pass
 
@@ -1457,7 +1492,7 @@ def get_start_weight_kg_for_date(date_key):
     당일 값이 없으면 date_key 이전 최근 기록으로 fallback.
     """
     try:
-        records = fetch_sheet_data("Health_Log")
+        records = fetch_health_log_data()
         if not records:
             return None
         df = pd.DataFrame(records)
@@ -5351,8 +5386,10 @@ def _anthropic_model_candidates(preferred=None):
     return _unique_keep_order([
         preferred,
         os.getenv("ANTHROPIC_MODEL", ""),
+        "claude-haiku-4-5",
         "claude-sonnet-4-6",
         "claude-sonnet-4-5",
+        "claude-3-5-haiku-latest",
         "claude-3-7-sonnet-latest",
         "claude-3-5-sonnet-latest",
     ])
@@ -5828,7 +5865,72 @@ def _normalize_daily_five_result(result, progress, slots, default_mode):
     return out
 
 
-@st.cache_data(ttl=3600*24)
+def _build_daily_five_fallback(progress, slots, default_mode, err_msg=""):
+    gap = _safe_float((progress or {}).get("weight_delta"), 0.0) or 0.0
+    req = _safe_float((progress or {}).get("required_daily_pace"), 0.0) or 0.0
+    day_now = _safe_int((progress or {}).get("day"), 0)
+    day_total = _safe_int((progress or {}).get("duration_days"), 0)
+
+    slot_list = list(slots or [])
+    enabled = [s for s in slot_list if bool(s.get("enabled"))]
+    active = next((s for s in enabled if bool(s.get("active_now"))), None)
+    later = next((s for s in enabled if not bool(s.get("active_now"))), None)
+    anchor = active or later
+
+    slot_label = str((anchor or {}).get("label") or "오늘 운동")
+    slot_start = str((anchor or {}).get("start") or "")
+    slot_end = str((anchor or {}).get("end") or "")
+    if slot_start and slot_end:
+        slot_window = f"{slot_start}~{slot_end}"
+    else:
+        slot_window = "가능 시간대"
+
+    tasks = [
+        {
+            "task_id": "task_1",
+            "category": "workout",
+            "priority": 1,
+            "title": f"{slot_label} 세션 고정",
+            "description": f"실행: {slot_window}에 30~50분 1회 수행하고, 완료 여부로 오늘을 판정하세요.",
+            "why": f"지금 미루면 격차 {gap:.2f}kg가 굳어지는 손해가 있고, 오늘 끝내면 내일 반등을 줄이는 이득이 있습니다.",
+        },
+        {
+            "task_id": "task_2",
+            "category": "diet",
+            "priority": 2,
+            "title": "남은 끼니 탄수 보정",
+            "description": "실행: 남은 식사는 단백질·채소 중심으로 1끼 구성하고, 빵/면/튀김/술 추가를 오늘은 중단하세요.",
+            "why": "오늘 탄수를 더 넣으면 내일 붓기와 체중 반등 손해가 커지고, 지금 끊으면 수치 안정 이득이 바로 나타납니다.",
+        },
+        {
+            "task_id": "task_3",
+            "category": "recovery",
+            "priority": 3,
+            "title": "취침 전 회복 루틴",
+            "description": "실행: 취침 30분 전 마그네슘 1정 + 5~10분 스트레칭으로 마무리하세요.",
+            "why": "오늘 회복을 놓치면 내일 피로와 RHR 반등 손해가 생기고, 지금 정리하면 내일 컨디션 회복 이득이 있습니다.",
+        },
+    ]
+
+    mode = str(default_mode or "build").strip().lower()
+    if mode not in {"recovery", "build", "push"}:
+        mode = "build"
+
+    if req > 0:
+        msg = f"생성 실패로 임시 플랜을 사용합니다. Day {day_now}/{day_total}, 현재 격차 {gap:.2f}kg · 필요 페이스 {req:.2f}kg/일 기준으로 오늘 방어 중심으로 운영하세요."
+    else:
+        msg = f"생성 실패로 임시 플랜을 사용합니다. Day {day_now}/{day_total}, 오늘은 격차 확대를 막는 3개 과제만 고정하세요."
+    if err_msg:
+        msg = f"{msg} (원인: {str(err_msg)[:90]})"
+
+    return {
+        "tasks": tasks,
+        "daily_message": msg,
+        "urgency_level": "high" if gap > 0 else "medium",
+        "today_training_mode": mode,
+    }
+
+
 def ai_generate_daily_five(date_key, sprint, current_status, context):
     if not sprint:
         return None
@@ -5936,11 +6038,20 @@ DEFAULT_TRAINING_MODE: {default_mode}
             temperature=0.6,
         )
         result = _normalize_daily_five_result(result, progress, slots, default_mode)
+        try:
+            st.session_state["_daily_five_last_error"] = ""
+        except Exception:
+            pass
         return result
 
     except Exception as e:
         print(f"Error generating daily five: {e}")
-        return None
+        try:
+            st.session_state["_daily_five_last_error"] = str(e)
+        except Exception:
+            pass
+        fallback = _build_daily_five_fallback(progress, slots, default_mode, err_msg=str(e))
+        return _normalize_daily_five_result(fallback, progress, slots, default_mode)
 
 
 def calculate_mission_status(current_weight):
@@ -6136,7 +6247,6 @@ def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=
 [PATTERNS] {ptn_txt}
 """
 
-@st.cache_data(ttl=3600*24)
 def ai_generate_daily_checkin(date_key, hrv, rhr, weight, morning_context, calendar_str):
     def _contains_positive_signal(t: str) -> bool:
         return any(x in str(t or "") for x in ["좋은 점", "유리", "개선", "줄어", "완화", "낮출 수", "안정"])
@@ -6316,7 +6426,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
     now_kst = get_current_kst()
 
     try:
-        df_health = pd.DataFrame(fetch_sheet_data("Health_Log"))
+        df_health = pd.DataFrame(fetch_health_log_data())
         df_action = pd.DataFrame(fetch_sheet_data("Action_Log"))
     except:
         df_health = pd.DataFrame()
@@ -6777,7 +6887,7 @@ def build_pitwall_consult_context(date_key, context_nonce="0"):
     except Exception:
         df_action = pd.DataFrame()
     try:
-        df_health = pd.DataFrame(fetch_sheet_data("Health_Log"))
+        df_health = pd.DataFrame(fetch_health_log_data())
     except Exception:
         df_health = pd.DataFrame()
 
@@ -9022,7 +9132,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["DASHBOARD", "SPRINT", "LOG", "PIT WALL"
 # [TAB 1] Dashboard
 with tab1:
     try:
-        df_h = pd.DataFrame(fetch_sheet_data("Health_Log"))
+        df_h = pd.DataFrame(fetch_health_log_data())
         df_a = pd.DataFrame(fetch_sheet_data("Action_Log"))
 
         if not df_h.empty:
@@ -9311,7 +9421,7 @@ with tab2:
         try:
             @st.cache_data(ttl=300)
             def get_current_health_data():
-                df_h = pd.DataFrame(fetch_sheet_data("Health_Log"))
+                df_h = pd.DataFrame(fetch_health_log_data())
                 if df_h.empty:
                     return None
                 latest = _latest_health_values(df_h)
@@ -9341,7 +9451,7 @@ with tab2:
                         (today_kst == (latest_ended["end_date"] + timedelta(days=1)))
                     )
                     if should_show_retro:
-                        df_h_retro = pd.DataFrame(fetch_sheet_data("Health_Log"))
+                        df_h_retro = pd.DataFrame(fetch_health_log_data())
                         df_action_retro = pd.DataFrame(fetch_sheet_data("Action_Log"))
                         retro_payload = build_sprint_retro_payload(
                             latest_ended,
@@ -9365,7 +9475,7 @@ with tab2:
 
                     date_key = get_mission_date_key()
 
-                    df_h = pd.DataFrame(fetch_sheet_data("Health_Log"))
+                    df_h = pd.DataFrame(fetch_health_log_data())
                     
                     cal_events = get_today_calendar_events(date_key)
                     available_slots = build_available_slots(date_key, cal_events)
@@ -9605,6 +9715,12 @@ with tab2:
 
                     else:
                         st.warning("데일리 파이브 생성 실패")
+                        try:
+                            last_df_err = str(st.session_state.get("_daily_five_last_error", "") or "").strip()
+                            if last_df_err:
+                                st.caption(f"원인: {last_df_err[:220]}")
+                        except Exception:
+                            pass
 
         except Exception as e:
             st.error(f"Error: {e}")
@@ -9780,7 +9896,7 @@ with tab4:
         df_action_pit = pd.DataFrame()
 
     try:
-        df_health_pit = pd.DataFrame(fetch_sheet_data("Health_Log"))
+        df_health_pit = pd.DataFrame(fetch_health_log_data())
     except:
         df_health_pit = pd.DataFrame()
 
@@ -9819,7 +9935,7 @@ with tab4:
                 sprint_dbg = get_active_sprint()
                 progress_dbg = None
                 if sprint_dbg:
-                    df_health_dbg = pd.DataFrame(fetch_sheet_data("Health_Log"))
+                    df_health_dbg = pd.DataFrame(fetch_health_log_data())
                     current_w_dbg = (_latest_health_values(df_health_dbg)["Weight"] if not df_health_dbg.empty else 0.0)
                     progress_dbg = calculate_sprint_progress(sprint_dbg, current_w_dbg)
 
