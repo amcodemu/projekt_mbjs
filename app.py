@@ -2915,6 +2915,7 @@ def calculate_sprint_progress(sprint, current_weight):
         return {
             'sprint': sprint,
             'day': min(sprint_days, days_passed + 1),
+            'duration_days': sprint_days,
             'days_remaining': days_remaining,
             'progress_pct': (days_passed / sprint_days) * 100,
             'weight_start': weight_goal['start_value'],
@@ -3294,7 +3295,7 @@ def summarize_day_logs(df_action, date_key):
         category = str(r.get("Category", "") or "")
         user_input = str(r.get("User_Input", "") or "")
 
-        out["today_logs"].append(f"[{action_time}] {category}: {user_input}")
+        out["today_logs"].append(f"[{date_key} {action_time}] {category}: {user_input}")
 
         if "운동" in category:
             out["worked_out_today"] = True
@@ -4258,6 +4259,7 @@ def build_daily_state(
     yesterday_key = (datetime.strptime(date_key, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     today = summarize_day_logs(df_action, date_key)
     yesterday = summarize_yesterday(df_action, yesterday_key)
+    yesterday_logs = summarize_day_logs(df_action, yesterday_key)
     yesterday_workout_review = summarize_yesterday_workout_review(df_action, date_key)
     recent_backlog = summarize_recent_backlog(df_action, date_key)
     calendar_flags = extract_calendar_flags(date_key, cal_evts)
@@ -4322,6 +4324,7 @@ def build_daily_state(
         "linear_expected_weight": (float(linear_expected_weight) if linear_expected_weight is not None else None),
         "available_slots": available_slots or [],
         "today_logs": list(today["today_logs"] or []),
+        "yesterday_logs": list(yesterday_logs["today_logs"] or []),
     }
     state["xc"] = compute_xc(daily_target, state)
     state["urgency"] = compute_urgency(state)
@@ -5585,6 +5588,27 @@ def _coaching_json_completion(
         parsed2 = _parse_json_object_from_ai_text(raw2)
         if parsed2 is not None:
             return parsed2
+
+        # 2회 자동 복구: 원요청을 다시 넣되 JSON 강제/저온으로 재시도
+        hard_prompt = f"""
+다음 요청에 대해 반드시 "JSON 객체 1개만" 출력하세요.
+- 코드펜스/설명문/머리말/꼬리말 금지
+- 최상위는 {{...}} 이어야 함
+- 키/문자열은 JSON 표준 따옴표(")만 사용
+
+[원요청]
+{prompt}
+"""
+        raw3 = _coaching_text_completion(
+            prompt=hard_prompt,
+            provider="anthropic",
+            model_anthropic=model_anthropic or COACHING_MODEL_ANTHROPIC,
+            max_tokens=min(int(max_tokens), 700),
+            temperature=0.0,
+        )
+        parsed3 = _parse_json_object_from_ai_text(raw3)
+        if parsed3 is not None:
+            return parsed3
         raise RuntimeError("Claude response did not contain JSON object")
 
     if not OPENAI_API_KEY:
@@ -6564,11 +6588,26 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
             return t
         return t[: n - 1] + "…"
 
-    today_logs_compact = [_clip_line(x, 90) for x in today_logs_full[:6]]
+    def _ensure_log_has_date(log_line, fallback_date):
+        s = str(log_line or "").strip()
+        if not s:
+            return s
+        if re.match(r"^\[\d{4}-\d{2}-\d{2}\s", s):
+            return s
+        if s.startswith("["):
+            return re.sub(r"^\[", f"[{fallback_date} ", s, count=1)
+        return f"[{fallback_date}] {s}"
+
+    today_logs_compact = [_clip_line(_ensure_log_has_date(x, date_key), 90) for x in today_logs_full[:6]]
     logs_text_today = "\n".join([f"- {x}" for x in today_logs_compact]) if today_logs_compact else "- (기록 없음)"
     recent_logs_all = list(recent_evidence.get("recent_logs_newest_first", []) or [])
     recent_logs_compact = [_clip_line(x, 90) for x in recent_logs_all[:8]]
     logs_text_recent = "\n".join([f"- {x}" for x in recent_logs_compact]) if recent_logs_compact else "- (기록 없음)"
+    yesterday_key = (datetime.strptime(date_key, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    y_logs_src = list((daily_state.get("yesterday_logs", []) or []))
+    y_logs = [_ensure_log_has_date(x, yesterday_key) for x in y_logs_src if str(x).strip()]
+    y_logs = [_clip_line(x, 90) for x in y_logs[:6]]
+    logs_text_yesterday = "\n".join([f"- {x}" for x in y_logs]) if y_logs else "- (기록 없음)"
     repeat_bad_food_days = int(recent_evidence.get("repeat_bad_food_days", 0) or 0)
     yesterday_workout_review = daily_state.get("yesterday_workout_review", {}) or {}
     yesterday_workout_compact = {
@@ -6672,6 +6711,8 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 - 섹션 헤더 문구(예: "지금 상황:", "현 시점 제안:", "핵심:")를 본문에 다시 쓰지 마십시오.
 - "HH:MM 기준" 같은 시각 표기를 본문에 넣지 마십시오. 상단 배지 시각만 사용합니다.
 - 어제가 정크푸드/음주 손실일이면 current_analysis 첫 문장에서 그 손실과 오늘 메이크업 필요성을 분명히 말하십시오.
+- "어제"로 특정 음식/음주를 단정할 때는 반드시 YESTERDAY_LOG_EVIDENCE에 있는 항목만 근거로 쓰십시오.
+- 어제 근거가 없으면 "최근 로그 기준" 또는 "최근 패턴 기준"으로 표현하고, 어제로 단정하지 마십시오.
 
 작성 가이드:
 - current_analysis: 2~3문장. "왜 오늘이 이런 상태인지"를 현재 데이터로 설명.
@@ -6701,6 +6742,9 @@ AVAILABLE_SLOTS:
 
 TODAY_LOG_EVIDENCE:
 {logs_text_today}
+
+YESTERDAY_LOG_EVIDENCE:
+{logs_text_yesterday}
 
 RECENT_LOG_EVIDENCE:
 {logs_text_recent}
