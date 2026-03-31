@@ -5512,6 +5512,7 @@ def _coaching_text_completion(
     model_anthropic=None,
     max_tokens=600,
     temperature=0.6,
+    messages_override=None,
 ):
     p = _resolve_provider(provider)
     if p == "anthropic":
@@ -5522,12 +5523,15 @@ def _coaching_text_completion(
         except Exception as ie:
             raise RuntimeError(f"anthropic package not installed: {ie}")
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        messages_payload = messages_override
+        if not isinstance(messages_payload, list) or not messages_payload:
+            messages_payload = [{"role": "user", "content": prompt}]
         resp = _anthropic_messages_create_with_fallback(
             client,
             preferred_model=str(model_anthropic or COACHING_MODEL_ANTHROPIC),
             max_tokens=max_tokens,
             temperature=temperature,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages_payload,
         )
         parts = []
         for b in list(getattr(resp, "content", []) or []):
@@ -5609,6 +5613,34 @@ def _coaching_json_completion(
         parsed3 = _parse_json_object_from_ai_text(raw3)
         if parsed3 is not None:
             return parsed3
+
+        # 3회 자동 복구: assistant prefill('{')로 JSON 시작을 강제
+        prefill_prompt = f"""
+다음 요청에 대해 JSON object 1개만 출력하세요.
+- 최상위는 반드시 {{ ... }} 객체
+- 코드펜스/설명문/머리말/꼬리말 금지
+- 키는 snake_case, 문자열 따옴표는 반드시 "
+
+[원요청]
+{prompt}
+"""
+        raw4_body = _coaching_text_completion(
+            prompt=prefill_prompt,
+            provider="anthropic",
+            model_anthropic=model_anthropic or COACHING_MODEL_ANTHROPIC,
+            max_tokens=min(int(max_tokens), 700),
+            temperature=0.0,
+            messages_override=[
+                {"role": "user", "content": prefill_prompt},
+                {"role": "assistant", "content": "{"},
+            ],
+        )
+        raw4 = str(raw4_body or "").strip()
+        if not raw4.startswith("{"):
+            raw4 = "{" + raw4
+        parsed4 = _parse_json_object_from_ai_text(raw4)
+        if parsed4 is not None:
+            return parsed4
         raise RuntimeError("Claude response did not contain JSON object")
 
     if not OPENAI_API_KEY:
@@ -6059,7 +6091,7 @@ DEFAULT_TRAINING_MODE: {default_mode}
             model_openai=COACHING_MODEL_OPENAI,
             model_anthropic=COACHING_MODEL_ANTHROPIC,
             max_tokens=1200,
-            temperature=0.6,
+            temperature=0.2,
         )
         result = _normalize_daily_five_result(result, progress, slots, default_mode)
         try:
