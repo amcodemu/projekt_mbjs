@@ -4351,7 +4351,7 @@ def _sanitize_plan_lines(text):
     def _norm_key(src):
         s = str(src or "").strip().lower()
         s = re.sub(r"^\s*[-•]\s*", "", s)
-        s = re.sub(r"^\s*(지금 상황|현 시점 제안|핵심|현재 상태 요약|현 시점 우선 1개|왜 이걸 우선하냐면|오늘 방어선|오늘 이득)\s*:\s*", "", s)
+        s = re.sub(r"^\s*(지금 상황|현 시점 제안|현 시점 진단|핵심|현재 상태 요약|현 시점 우선 1개|왜 이걸 우선하냐면|오늘 방어선|오늘 이득)\s*:\s*", "", s)
         s = re.sub(r"\b\d{1,2}:\d{2}\s*기준\b", "", s)
         s = re.sub(r"\s*~\s*", "~", s)
         s = re.sub(r"\s+", " ", s)
@@ -4367,7 +4367,7 @@ def _sanitize_plan_lines(text):
         line = re.sub(r"(\d{1,2})\s*:\s*(\d{2})", r"\1:\2", line)
         line = re.sub(r"\s*~\s*", "~", line)
         line = re.sub(r"\b\d{1,2}:\d{2}\s*기준\s*", "", line).strip()
-        line = re.sub(r"^\s*(지금 상황|현 시점 제안)\s*:\s*", "", line).strip()
+        line = re.sub(r"^\s*(지금 상황|현 시점 제안|현 시점 진단)\s*:\s*", "", line).strip()
         line = re.sub(r"\s{2,}", " ", line).strip()
 
         key = _norm_key(line)
@@ -5229,7 +5229,6 @@ def validate_action_plan_output(result, daily_state):
     _dedupe_sent = globals().get("_dedupe_consecutive_sentences", lambda t: str(t or ""))
     _warn_norm = globals().get("_normalize_warning_text", lambda w, _s: str(w or ""))
     _critical_now = globals().get("_build_critical_now_line", lambda _s: "")
-    _forced_next = globals().get("build_forced_next_action_from_state", lambda _s: "")
 
     text = str(result.get("next_actions", "") or "")
     warns = str(result.get("warnings", "") or "")
@@ -5245,7 +5244,7 @@ def validate_action_plan_output(result, daily_state):
     def _strip_heading_noise(src):
         s = str(src or "")
         s = re.sub(r"\b\d{1,2}:\d{2}\s*기준\b", "", s)
-        s = re.sub(r"^\s*(지금 상황|현 시점 제안)\s*[:：]\s*", "", s, flags=re.MULTILINE)
+        s = re.sub(r"^\s*(지금 상황|현 시점 제안|현 시점 진단)\s*[:：]\s*", "", s, flags=re.MULTILINE)
         s = re.sub(r"\s{2,}", " ", s).strip()
         return s
 
@@ -5315,15 +5314,13 @@ def validate_action_plan_output(result, daily_state):
     warns = _warn_norm(warns, daily_state)
     warns = _dedupe_sent(warns)
 
-    # 출력이 비었을 때만 최소 안전 문장 보강
+    # 출력이 비었을 때만 최소 안전 문장 보강(지시형 대신 진단형 유지)
     if not analysis.strip():
         analysis = str(_critical_now(daily_state) or "").strip()
-    if not text.strip():
-        text = str(_forced_next(daily_state) or "").strip()
     if not analysis.strip():
-        analysis = "오늘 데이터 기준으로 리스크와 우선순위를 다시 점검해 주세요."
+        analysis = "오늘 데이터 기준으로 리스크와 격차를 다시 평가했습니다."
     if not text.strip():
-        text = "현 시점에서 가장 중요한 행동 1개를 확정하고 실행 조건(시간·분량)을 붙여 완료하세요."
+        text = "현 시점 진단: 스프린트 격차, 섭취 누적, 운동/회복 지표의 균형을 우선 점검할 구간입니다."
 
     # 최종 중복/형식 정리
     analysis = _sanitize_plan_lines(analysis)
@@ -5333,7 +5330,7 @@ def validate_action_plan_output(result, daily_state):
     text = _drop_overlap(text, analysis)
     text = "\n".join([ln for ln in re.split(r"\n+", text) if ln.strip()][:5]).strip()
     if not text:
-        text = str(_forced_next(daily_state) or "").strip()
+        text = "현 시점 진단: 추가 제안 없이 현재 데이터 해석 중심으로 유지합니다."
 
     result["current_analysis"] = _polish(_humanize(analysis))
     result["next_actions"] = _polish(_humanize(text))
@@ -5694,20 +5691,55 @@ def _action_plan_chat_completion_json(prompt):
 
 
 def build_rule_based_action_plan(daily_state, daily_five_focus=None):
-    lines = [
-        "AI 응답 생성에 실패해 임시 플랜으로 전환했습니다. 아래 1개만 먼저 실행하세요.",
-        build_forced_next_action_from_state(daily_state),
-    ]
+    lines = ["AI 응답 생성에 실패해 임시 진단 모드로 전환했습니다."]
+
+    vitals = (daily_state.get("vitals") or {}) if isinstance(daily_state, dict) else {}
+    hrv = _safe_float(vitals.get("hrv"), None)
+    rhr = _safe_float(vitals.get("rhr"), None)
+    wt = _safe_float(vitals.get("weight"), None)
+    vv = []
+    if hrv is not None:
+        vv.append(f"HRV {hrv:.1f}")
+    if rhr is not None:
+        vv.append(f"RHR {rhr:.1f}")
+    if wt is not None:
+        vv.append(f"체중 {wt:.1f}kg")
+    if vv:
+        lines.append("현재 지표: " + ", ".join(vv))
+
+    sprint_obj = (daily_state.get("sprint") or {}) if isinstance(daily_state, dict) else {}
+    pace = str(sprint_obj.get("pace_status", "") or "").strip().lower()
+    gap = _safe_float(sprint_obj.get("weight_delta"), None)
+    req = _safe_float(sprint_obj.get("required_daily_pace"), None)
+    if pace:
+        pace_label = {"ahead": "앞섬", "behind": "뒤처짐", "on_track": "기준선"}.get(pace, pace)
+        if (gap is not None) and (req is not None):
+            lines.append(f"스프린트 상태: {pace_label}, 격차 {gap:.2f}kg / 필요 페이스 {req:.2f}kg/일")
+        elif gap is not None:
+            lines.append(f"스프린트 상태: {pace_label}, 격차 {gap:.2f}kg")
+        else:
+            lines.append(f"스프린트 상태: {pace_label}")
+
+    intake_obj = (daily_state.get("intake_today") or {}) if isinstance(daily_state, dict) else {}
+    kcal_now = _safe_int(intake_obj.get("kcal_est_today", 0), 0)
+    kcal_target = _safe_int(intake_obj.get("kcal_target_today", DEFAULT_DAILY_KCAL_TARGET), DEFAULT_DAILY_KCAL_TARGET)
+    lines.append(f"섭취 현황: {kcal_now}kcal / 목표 {kcal_target}kcal")
+
+    workout_obj = (daily_state.get("workout_done") or {}) if isinstance(daily_state, dict) else {}
+    worked = bool(workout_obj.get("worked_out_today", False))
+    next_slot = str(workout_obj.get("next_workout_slot") or "").strip()
+    if worked:
+        lines.append("운동 현황: 오늘 운동 기록 있음")
+    else:
+        lines.append("운동 현황: 오늘 운동 기록 없음" + (f" (다음 슬롯: {next_slot})" if next_slot else ""))
+
     xc = (daily_state.get("xc", {}) or {}).get("xc_value_kg")
     if xc is not None:
-        lines.append(f"참고: 오늘 xC 목표 변화량은 {float(xc):.2f}kg입니다.")
+        lines.append(f"xC 참고값: {float(xc):.2f}kg")
+
     df_focus = daily_five_focus or {}
     if bool(df_focus.get("has_plan")):
-        lines.append(f"DF 상태: {str(df_focus.get('summary_line', '')).strip()}")
-        rem = list(df_focus.get("remaining_tasks", []) or [])
-        if rem:
-            top = rem[0]
-            lines.append(f"다음 우선 DF: ({top.get('task_id','')}) {top.get('title','')}")
+        lines.append(f"DF 진행: {int(df_focus.get('completed', 0))}/{int(df_focus.get('total', 0))} 완료")
     return "\n".join(lines)
 
 
@@ -5726,6 +5758,7 @@ def format_coaching_readability_markdown(text):
         "스프린트 현황",
         "현재 상태 요약",
         "현 시점 제안",
+        "현 시점 진단",
         "현 시점 우선 1개",
         "왜 이걸 우선하냐면",
         "오늘 방어선",
@@ -6339,7 +6372,7 @@ def ai_generate_daily_checkin(date_key, hrv, rhr, weight, morning_context, calen
             reason = f"현재 지표는 HRV {hrv:.0f}, RHR {rhr:.0f}, 체중 {weight:.1f}kg 기준입니다."
 
         if not analysis:
-            analysis = "최근 기록을 보면 오늘은 식사와 운동 타이밍을 단순하게 잡는 편이 유리합니다."
+            analysis = "최근 기록을 보면 오늘은 회복 지표와 스프린트 격차가 동시에 흔들리는 구간입니다."
         if ("HRV" not in analysis) and ("RHR" not in analysis) and ("체중" not in analysis):
             analysis = f"{analysis} (현재 지표: HRV {hrv:.0f}, RHR {rhr:.0f}, 체중 {weight:.1f}kg)"
 
@@ -6354,21 +6387,14 @@ def ai_generate_daily_checkin(date_key, hrv, rhr, weight, morning_context, calen
 
         if not workout:
             workout = (
-                "퇴근 후 가능한 슬롯 1개를 고정해 20~30분만 움직이세요."
+                "운동 진단: 오늘 운동 완료 0회 상태이며, 퇴근 후 슬롯 유무가 내일 피로도 변동폭에 직접 연결됩니다."
                 if "Workday" in str(work_constraint)
-                else "오전/오후 중 가능한 시간대에 30분 내외 유산소 1회를 먼저 끝내세요."
+                else "운동 진단: 주말 슬롯 활용 여부에 따라 내일 체중·피로 지표 반응 폭이 크게 달라질 구간입니다."
             )
         if not diet:
-            diet = "점심은 단백질·채소 중심으로 두고 밥/면/튀김은 한 번 쉬어가세요."
+            diet = "식단 진단: 최근 로그 기준 탄수·염분 변동성이 커서, 오늘 섭취 구성에 따라 내일 붓기 반등 폭이 결정됩니다."
         if not recovery:
-            recovery = "취침 전 5분 스트레칭과 마그네슘 1정으로 회복 루틴을 고정하세요."
-
-        if not _df_has_concrete_detail(workout):
-            workout = f"{workout} (예: 20~30분 1회)"
-        if not _df_has_concrete_detail(diet):
-            diet = f"{diet} (예: 탄수 추가 없이 1끼)"
-        if not _df_has_concrete_detail(recovery):
-            recovery = f"{recovery} (예: 5~10분)"
+            recovery = "회복 진단: 현재 HRV/RHR 조합은 수면 질 변화에 민감한 상태로, 야간 회복 품질이 다음날 지표를 좌우합니다."
 
         out["headline"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(headline)))
         out["headline_reason"] = polish_korean_coaching_text(_dedupe_consecutive_sentences(_rewrite_vague_korean(reason)))
@@ -6409,7 +6435,7 @@ def ai_generate_daily_checkin(date_key, hrv, rhr, weight, morning_context, calen
 
 [섹션 목표]
 - 조간신문 1면+사설처럼, 오늘 컨디션이 왜 이런지 최근 기록 기반으로 해석합니다.
-- 오늘 하루를 어떤 기조로 운영해야 하는지 큰 방향을 제시합니다.
+- 오늘 상태를 운동/식단/회복 관점에서 객관적으로 진단합니다.
 
 [입력 사실]
 Data: {morning_context}
@@ -6427,9 +6453,9 @@ SprintContext: {sprint_ctx_json}
 - analysis에는 반드시 아래 2문장을 포함하십시오.
   1) 지금 안 하면 생기는 손해
   2) 지금 하면 좋아지는 점
-- mission_workout/mission_diet/mission_recovery는 각각 시간대/행동/분량 중 최소 2개를 담은 실행문으로 작성하십시오.
-- "관리하세요", "신경쓰세요", "준비하세요" 같은 모호한 문장만 단독으로 쓰지 마십시오.
-- "지금 상황:", "현 시점 제안:" 같은 섹션 라벨은 출력에 넣지 마십시오.
+- mission_workout/mission_diet/mission_recovery는 각각 "현재 상태 평가 + 지표 의미" 중심의 진단문으로 작성하십시오.
+- 제안/지시/권고 문장 금지: "하세요/하십시오/권장/추천" 형태를 쓰지 마십시오.
+- "지금 상황:", "현 시점 진단:" 같은 섹션 라벨은 출력에 넣지 마십시오.
 - json 객체 1개만 출력하십시오.
 
 Output JSON: {{
@@ -6455,9 +6481,9 @@ Output JSON: {{
     except Exception as e:
         fallback = {
             "condition_signal": "Yellow",
-            "headline": "생성 오류로 기본 코칭으로 전환했습니다.",
+            "headline": "생성 오류로 기본 진단으로 전환했습니다.",
             "headline_reason": "모델/네트워크 이슈",
-            "analysis": "AI 응답이 실패해 기본 규칙 기반 코칭으로 전환했습니다.",
+            "analysis": "AI 응답이 실패해 기본 규칙 기반 진단으로 전환했습니다.",
             "mission_workout": "-",
             "mission_diet": "-",
             "mission_recovery": "-"
@@ -6730,7 +6756,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 {north_star_context}
 {korean_style_context}
 
-역할: 실시간 개인 코치
+역할: 실시간 상태 분석가
 언어: 한국어 존댓말
 
 핵심 원칙:
@@ -6738,17 +6764,18 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 - 데이터 해석은 날카롭게, 말투는 사람답고 자연스럽게 작성하십시오.
 - 중언부언 금지: 같은 의미 반복 금지, 짧고 명확하게.
 - 모호한 표현 금지: "자유 슬롯", "준비하세요", "건강한 메뉴" 같은 추상어를 쓰지 마십시오.
-- 식사/음주 리스크가 실제로 있으면 강도 높은 피드백을 허용합니다(모욕/비난 금지).
+- 식사/음주 리스크가 실제로 있으면 강도 높은 평가를 허용합니다(모욕/비난 금지).
 - 하드 템플릿 문장을 복붙하지 말고 상황에 맞게 자율적으로 구성하십시오.
-- 섹션 헤더 문구(예: "지금 상황:", "현 시점 제안:", "핵심:")를 본문에 다시 쓰지 마십시오.
+- 섹션 헤더 문구(예: "지금 상황:", "현 시점 진단:", "핵심:")를 본문에 다시 쓰지 마십시오.
 - "HH:MM 기준" 같은 시각 표기를 본문에 넣지 마십시오. 상단 배지 시각만 사용합니다.
 - 어제가 정크푸드/음주 손실일이면 current_analysis 첫 문장에서 그 손실과 오늘 메이크업 필요성을 분명히 말하십시오.
 - "어제"로 특정 음식/음주를 단정할 때는 반드시 YESTERDAY_LOG_EVIDENCE에 있는 항목만 근거로 쓰십시오.
 - 어제 근거가 없으면 "최근 로그 기준" 또는 "최근 패턴 기준"으로 표현하고, 어제로 단정하지 마십시오.
+- 제안/지시/권고 문장 금지: "하세요/하십시오/권장/추천" 형태를 쓰지 마십시오.
 
 작성 가이드:
-- current_analysis: 2~3문장. "왜 오늘이 이런 상태인지"를 현재 데이터로 설명.
-- next_actions: 3~4줄. 각 줄은 실행 가능한 행동 1개 + 이유(손해/이득) 포함.
+- current_analysis: 3~5문장. "왜 오늘이 이런 상태인지"를 현재 데이터로 설명.
+- next_actions: 3~4줄. 각 줄은 "현 시점 진단 포인트 1개 + 의미(손해/이득)" 형식으로 작성하십시오. (실행 지시 금지)
 - warnings: 리스크가 있을 때만 1~2문장. 없으면 빈 문자열.
 - 캘린더/시간 관련 내용은 슬롯/스케줄 사실만 사용.
 - 최근 로그에 정크푸드/음주가 있으면, current_analysis 첫 문장에서 그 사실과 오늘 손실을 짧게 명시하십시오.
@@ -9413,14 +9440,14 @@ with tab1:
                         unsafe_allow_html=True,
                     )
                     st.write("")
-                    st.markdown("**오늘의 전략**")
+                    st.markdown("**오늘의 진단**")
                     c1, c2, c3 = st.columns(3)
                     with c1:
-                        st.markdown(f"""<div class="strategy-box workout-box"><span class="strategy-title">운동</span>{mission_workout_html}</div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class="strategy-box workout-box"><span class="strategy-title">운동 진단</span>{mission_workout_html}</div>""", unsafe_allow_html=True)
                     with c2:
-                        st.markdown(f"""<div class="strategy-box diet-box"><span class="strategy-title">식단</span>{mission_diet_html}</div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class="strategy-box diet-box"><span class="strategy-title">식단 진단</span>{mission_diet_html}</div>""", unsafe_allow_html=True)
                     with c3:
-                        st.markdown(f"""<div class="strategy-box recovery-box"><span class="strategy-title">회복</span>{mission_recovery_html}</div>""", unsafe_allow_html=True)
+                        st.markdown(f"""<div class="strategy-box recovery-box"><span class="strategy-title">회복 진단</span>{mission_recovery_html}</div>""", unsafe_allow_html=True)
             else:
                 st.info(f"💤 데이터 대기 중 ({date_key})")
 
@@ -9479,7 +9506,7 @@ with tab1:
                     st.markdown("**지금 상황**")
                     st.markdown(format_coaching_readability_markdown(ap.get("current_analysis", "")))
                     st.markdown("")
-                    st.markdown("**현 시점 제안**")
+                    st.markdown("**현 시점 진단**")
                     st.markdown(format_coaching_readability_markdown(ap.get("next_actions", "")))
                     if ap.get('warnings'):
                         st.error(f"⚠️ {ap['warnings']}")
@@ -10032,4 +10059,3 @@ with tab4:
             st.cache_data.clear()
             st.cache_resource.clear()
             st.success("캐시 클리어 완료!")
-
