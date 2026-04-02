@@ -1974,7 +1974,7 @@ def sync_daily_sprint_progress_completion(date_key, sprint_id, completed, total,
         return False
 
 
-def persist_daily_sprint_progress(date_key, sprint_id, daily_state, daily_five_status, sprint_progress=None):
+def persist_daily_sprint_progress(date_key, sprint_id, daily_state, progress_status=None, sprint_progress=None):
     try:
         if not sprint_id:
             return False
@@ -2015,9 +2015,9 @@ def persist_daily_sprint_progress(date_key, sprint_id, daily_state, daily_five_s
         row_data = {
             "Date": str(date_key),
             "Sprint_ID": sprint_id_str,
-            "Completed": _safe_int((daily_five_status or {}).get("completed", 0), 0),
-            "Total": _safe_int((daily_five_status or {}).get("total", 0), 0),
-            "Completion_Rate": round(_safe_float((daily_five_status or {}).get("completion_rate", 0.0), 0.0), 4),
+            "Completed": _safe_int((progress_status or {}).get("completed", 0), 0),
+            "Total": _safe_int((progress_status or {}).get("total", 0), 0),
+            "Completion_Rate": round(_safe_float((progress_status or {}).get("completion_rate", 0.0), 0.0), 4),
             "XC_Value_KG": round(_safe_float(xc_obj.get("xc_value_kg", 0.0), 0.0), 3),
             "Urgency_Level": str(urgency_obj.get("level", "") or ""),
             "Pace_Status": str((sprint_progress or {}).get("pace_status", "") or ""),
@@ -2677,13 +2677,6 @@ def ensure_sprint_sheet_headers():
     Sprint 관련 시트의 필수 헤더를 선제적으로 동기화한다.
     """
     synced = False
-    try:
-        sh_tasks = get_db_connection("Sprint_Daily_Tasks")
-        _get_or_init_headers(sh_tasks, SPRINT_DAILY_TASKS_DEFAULT_HEADERS)
-        synced = True
-    except Exception as e:
-        print("ensure headers error (Sprint_Daily_Tasks):", e)
-
     try:
         sh_progress = get_db_connection("Daily_Sprint_Progress")
         _get_or_init_headers(sh_progress, DAILY_SPRINT_PROGRESS_DEFAULT_HEADERS)
@@ -5690,7 +5683,7 @@ def _action_plan_chat_completion_json(prompt):
     return json.loads(response.choices[0].message.content)
 
 
-def build_rule_based_action_plan(daily_state, daily_five_focus=None):
+def build_rule_based_action_plan(daily_state):
     lines = ["AI 응답 생성에 실패해 임시 진단 모드로 전환했습니다."]
 
     vitals = (daily_state.get("vitals") or {}) if isinstance(daily_state, dict) else {}
@@ -5737,9 +5730,6 @@ def build_rule_based_action_plan(daily_state, daily_five_focus=None):
     if xc is not None:
         lines.append(f"xC 참고값: {float(xc):.2f}kg")
 
-    df_focus = daily_five_focus or {}
-    if bool(df_focus.get("has_plan")):
-        lines.append(f"DF 진행: {int(df_focus.get('completed', 0))}/{int(df_focus.get('total', 0))} 완료")
     return "\n".join(lines)
 
 
@@ -5829,7 +5819,7 @@ def format_coaching_readability_markdown(text):
 
 
 # ==========================================
-# AI 생성부 (Daily Five / Check-in / Action Plan)
+# AI 생성부 (Check-in / Action Plan)
 # ==========================================
 
 def _df_has_concrete_detail(text):
@@ -6246,7 +6236,7 @@ def prepare_full_context(df_health, df_action, current_weight, is_morning_fixed=
 
     today_date_key = (now_kst - timedelta(days=1)).strftime('%Y-%m-%d') if now_kst.hour < 5 else now_kst.strftime('%Y-%m-%d')
 
-    # DF 체크 로그는 코칭 품질보다는 진행률 집계용이므로 context에서 제외해 캐시 변동을 줄인다.
+    # 레거시 내부 마킹 로그(DF*)는 코칭 품질 기여가 낮아 context에서 제외한다.
     df_action = filter_out_df_logs(df_action)
 
     five_days_ago = (datetime.strptime(today_date_key, '%Y-%m-%d') - timedelta(days=5)).strftime('%Y-%m-%d')
@@ -6493,7 +6483,7 @@ Output JSON: {{
         return _normalize_daily_checkin_result(fallback, sprint_progress, wc)
 
 @st.cache_data(ttl=900)
-def ai_generate_action_plan_cached(hrv, rhr, weight, date_key, slots_key, activity_sig, today_activities, available_slots, plan_version, daily_five_sig):
+def ai_generate_action_plan_cached(hrv, rhr, weight, date_key, slots_key, activity_sig, today_activities, available_slots, plan_version):
     result = ai_generate_action_plan_internal(
         hrv, rhr, weight,
         list(today_activities or []),
@@ -6565,41 +6555,6 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
     else:
         daily_state["prev_xc_feedback"] = {"date": None, "gap_kg": None}
 
-    daily_five_status = {
-        "has_plan": False,
-        "completed": 0,
-        "total": 0,
-        "completion_rate": 0.0,
-    }
-    daily_five_focus = {
-        "has_plan": False,
-        "completed": 0,
-        "total": 0,
-        "completion_rate": 0.0,
-        "remaining_count": 0,
-        "remaining_tasks": [],
-        "summary_line": "DF 계획 없음",
-        "signature": "no_plan",
-    }
-    if sprint:
-        try:
-            daily_five_focus = build_daily_five_focus_snapshot(date_key, sprint["sprint_id"], df_action)
-            daily_five_status = {
-                "has_plan": bool(daily_five_focus.get("has_plan", False)),
-                "completed": int(daily_five_focus.get("completed", 0)),
-                "total": int(daily_five_focus.get("total", 0)),
-                "completion_rate": float(daily_five_focus.get("completion_rate", 0.0)),
-            }
-        except:
-            pass
-
-    daily_five_plan = {}
-    try:
-        if sprint:
-            daily_five_plan = load_dailyfive_cache(date_key, sprint["sprint_id"]) or {}
-    except:
-        daily_five_plan = {}
-
     sprint_status = {
         "has_sprint": bool(progress),
         "pace_status": (progress.get("pace_status") if progress else None),
@@ -6616,7 +6571,6 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
     }
     no_workout_today = not bool((daily_state.get("workout_done", {}) or {}).get("worked_out_today", False))
     behind_pace = sprint_status.get("pace_status") == "behind"
-    daily_five_zero_done = bool(daily_five_status.get("has_plan")) and int(daily_five_status.get("completed", 0)) == 0
     urgency_obj = daily_state.get("urgency", {}) or {}
     urgency_level = str(urgency_obj.get("level") or "low")
     xc_obj = daily_state.get("xc", {}) or {}
@@ -6630,7 +6584,7 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
 
     if xc_inverse_day:
         coaching_mode = "damage_control"
-    elif urgency_level == "high" or xc_high_push or (no_workout_today and (behind_pace or daily_five_zero_done)):
+    elif urgency_level == "high" or xc_high_push or (no_workout_today and behind_pace):
         coaching_mode = "recovery_lockdown"
     else:
         coaching_mode = "normal"
@@ -6687,22 +6641,17 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
     kcal_target_today = _safe_int(intake_obj.get("kcal_target_today", DEFAULT_DAILY_KCAL_TARGET), DEFAULT_DAILY_KCAL_TARGET)
     kcal_delta_today = _safe_int(intake_obj.get("kcal_delta_today", kcal_now - kcal_target_today), kcal_now - kcal_target_today)
     kcal_balance_status = str(intake_obj.get("kcal_balance_status", "within") or "within")
-    daily_five_mode = str((daily_five_plan or {}).get("today_training_mode", "") or "").strip().lower()
-    if daily_five_mode not in {"recovery", "build", "push"}:
-        daily_five_mode = infer_training_mode(yesterday_workout_review, available_slots)
+    daily_training_mode = infer_training_mode(yesterday_workout_review, available_slots)
     training_anchor = {
-        "mode": daily_five_mode,
+        "mode": daily_training_mode,
         "is_soft_anchor": True,
-        "source": "daily_five_or_yesterday_review",
+        "source": "yesterday_review",
     }
     training_anchor_json = json.dumps(training_anchor, ensure_ascii=False)
     slots_compact_text = slots_to_compact_text(available_slots)
     slots_compact_lines = [_clip_line(x, 96) for x in str(slots_compact_text or "").splitlines()[:4]]
     slots_text = "\n".join(slots_compact_lines) if slots_compact_lines else "- (슬롯 없음)"
     cal_obj = daily_state.get("calendar", {}) or {}
-    daily_five_remaining = int(_safe_int(daily_five_focus.get("remaining_count", 0), 0))
-    daily_five_completed = int(_safe_int(daily_five_focus.get("completed", 0), 0))
-    daily_five_total = int(_safe_int(daily_five_focus.get("total", 0), 0))
     workout_obj = daily_state.get("workout_done", {}) or {}
     worked_out_today = bool(workout_obj.get("worked_out_today", False))
     next_workout_slot = str(workout_obj.get("next_workout_slot") or "")
@@ -6737,12 +6686,6 @@ def ai_generate_action_plan_internal(hrv, rhr, weight, today_activities, availab
             "next_slot": next_workout_slot,
             "scheduled_title": scheduled_workout_title,
             "scheduled_window": f"{dinner_workout_start}-{dinner_workout_end}" if dinner_workout_start or dinner_workout_end else "",
-        },
-        "daily_five": {
-            "completed": daily_five_completed,
-            "total": daily_five_total,
-            "remaining": daily_five_remaining,
-            "mode": daily_five_mode,
         },
         "latest_action_time": latest_action_time,
     }
@@ -6828,7 +6771,7 @@ RECENT_LOG_EVIDENCE:
         print("action plan error:", e)
         fallback = {
             "current_analysis": "AI 호출 실패로 규칙 기반 플랜으로 전환했습니다.",
-            "next_actions": build_rule_based_action_plan(daily_state, daily_five_focus=daily_five_focus),
+            "next_actions": build_rule_based_action_plan(daily_state),
             "warnings": format_ai_error_message(e),
             "fallback_mode": "ai_error",
         }
@@ -6843,7 +6786,7 @@ RECENT_LOG_EVIDENCE:
             "generated_hours_left": 24 - now_kst2.hour
         }
 
-def ai_generate_action_plan(hrv, rhr, weight, full_context, today_activities, available_slots, daily_five_sig=""):
+def ai_generate_action_plan(hrv, rhr, weight, full_context, today_activities, available_slots):
     slots_key = json.dumps(available_slots, ensure_ascii=False, sort_keys=True)
     activity_items = list(today_activities or [])
     activity_sig = "|".join(activity_items[:20])
@@ -6857,7 +6800,6 @@ def ai_generate_action_plan(hrv, rhr, weight, full_context, today_activities, av
             tuple(activity_items),
             available_slots,
             ACTION_PLAN_CACHE_VERSION,
-            str(daily_five_sig or ""),
         )
     except Exception:
         # 캐시 우회 1회 실행 (실패 결과 비캐시)
@@ -6878,31 +6820,18 @@ PITWALL_PATCH_FIELD_MAP = {
 }
 
 PITWALL_PATCH_TRIGGER_KEYWORDS = [
-    "patch", "패치", "수정안", "계획 수정", "task_", "json", "daily five 수정",
+    "patch", "패치", "수정안", "계획 수정", "task_", "json",
 ]
 
 
 def _extract_df_task_targets(user_message):
-    txt_up = str(user_message or "").upper()
-    targets = set()
-    for m in re.finditer(r"(?<![A-Z0-9])DF\s*([1-5])(?!\d)", txt_up):
-        targets.add(f"task_{int(m.group(1))}")
-    for m in re.finditer(r"(?<![A-Z0-9])TASK[_-]?([1-5])(?!\d)", txt_up):
-        targets.add(f"task_{int(m.group(1))}")
-    return sorted(targets)
+    # Daily Five 기능 제거: DF task patch 타깃은 더 이상 사용하지 않음
+    return []
 
 
 def _pitwall_wants_patch(user_message):
-    txt = str(user_message or "").strip().lower()
-    if not txt:
-        return False
-    if _extract_df_task_targets(txt):
-        return True
-    change_verbs = ["바꾸", "변경", "수정", "교체", "replace", "change", "update", "revise"]
-    if any(v in txt for v in change_verbs):
-        if ("df" in txt) or ("task" in txt):
-            return True
-    return any(k in txt for k in PITWALL_PATCH_TRIGGER_KEYWORDS)
+    # Daily Five 기능 제거: Pit Wall patch 비활성화
+    return False
 
 
 def _pitwall_compact_context(consult_context):
@@ -6922,12 +6851,6 @@ def _pitwall_compact_context(consult_context):
         if slots:
             daily_state["available_slots"] = slots[:4]
         ctx["daily_state"] = daily_state
-    except:
-        pass
-    try:
-        tasks = list(ctx.get("daily_five_tasks", []) or [])
-        if tasks:
-            ctx["daily_five_tasks"] = tasks[:5]
     except:
         pass
     return ctx
@@ -6981,8 +6904,6 @@ def build_pitwall_consult_context(date_key, context_nonce="0"):
         "sprint": {},
         "sprint_progress": {},
         "daily_state": {},
-        "daily_five_focus": {},
-        "daily_five_tasks": [],
         "recent_logs": [],
     }
     try:
@@ -7057,49 +6978,6 @@ def build_pitwall_consult_context(date_key, context_nonce="0"):
         "today_logs": list((daily_state.get("today_logs", []) or [])),
     }
     out["daily_state"] = daily_state_brief
-
-    try:
-        out["daily_five_focus"] = build_daily_five_focus_snapshot(str(date_key), sprint_id, df_action)
-    except Exception:
-        out["daily_five_focus"] = {
-            "has_plan": False,
-            "completed": 0,
-            "total": 0,
-            "completion_rate": 0.0,
-            "remaining_count": 0,
-            "remaining_tasks": [],
-            "summary_line": "DF 계획 없음",
-            "signature": "no_plan",
-        }
-
-    try:
-        rows = fetch_sheet_data("Sprint_Daily_Tasks")
-        tasks = [
-            r for r in (rows or [])
-            if str(r.get("Date", "")).strip() == str(date_key)
-            and str(r.get("Sprint_ID", "")).strip() == sprint_id
-        ]
-        tasks = sorted(
-            tasks,
-            key=lambda x: (
-                _task_index_from_task_id(x.get("Task_ID", "")) or 999,
-                _safe_int(x.get("Priority", 99), 99),
-            ),
-        )
-        out["daily_five_tasks"] = [
-            {
-                "task_id": str(t.get("Task_ID", "")).strip(),
-                "priority": _safe_int(t.get("Priority", 0), 0),
-                "category": str(t.get("Category", "")).strip(),
-                "title": str(t.get("Title", "")).strip(),
-                "description": str(t.get("Description", "")).strip(),
-                "why": str(t.get("Why", "")).strip(),
-                "completed": _to_boolish(t.get("Completed", "")),
-            }
-            for t in tasks
-        ]
-    except Exception:
-        out["daily_five_tasks"] = []
 
     try:
         recent = build_recent_action_evidence(df_action, str(date_key), lookback_days=2)
@@ -7192,7 +7070,7 @@ def ai_generate_pitwall_consultation(user_message, consult_context, chat_history
                 temperature=0.6,
             )
             if not coach_reply:
-                coach_reply = "오늘 남은 DF 항목 중 최우선 1개를 먼저 확정하고, 가능한 시간대에 20분 단위로 마무리해 주세요."
+                coach_reply = "오늘 데이터 기준 핵심 변수 1개를 먼저 고정해 흐름 변동을 줄이는 쪽이 유리합니다."
             coach_reply = _normalize_pitwall_reply_text(coach_reply, compact_context)
             return {"coach_reply": coach_reply, "plan_patch": {"enabled": False, "changes": []}}
 
@@ -7425,7 +7303,6 @@ def summarize_action_range(df_action, start_key, end_key):
         "sauna_count": 0,
         "supplement_count": 0,
         "notes_count": 0,
-        "df_marks": [],
         "evidence_logs": [],
     }
     if df_action is None or df_action.empty or "Date" not in df_action.columns:
@@ -7440,7 +7317,6 @@ def summarize_action_range(df_action, start_key, end_key):
     if sort_cols:
         in_range = in_range.sort_values(sort_cols, na_position="last")
 
-    marks = set()
     for _, r in in_range.iterrows():
         out["log_count"] += 1
         category = str(r.get("Category", "") or "")
@@ -7487,19 +7363,6 @@ def summarize_action_range(df_action, start_key, end_key):
         if "노트" in category:
             out["notes_count"] += 1
 
-        up_cat = category.upper()
-        up_text = text.upper()
-        if "DF" in up_cat or ("DF" in up_text):
-            marks_raw = js.get("df_marks", [])
-            if isinstance(marks_raw, list):
-                for m in marks_raw:
-                    t = str(m or "").strip().upper()
-                    if re.fullmatch(r"DF[1-5]", t):
-                        marks.add(t)
-            for m in re.finditer(r"(?<![A-Z0-9])DF\s*([1-5])(?!\d)", up_text):
-                marks.add(f"DF{int(m.group(1))}")
-
-    out["df_marks"] = sorted(marks)
     return out
 
 
@@ -7742,22 +7605,8 @@ def build_daily_wrapup_payload(
         termin_brief=tomorrow_termin_brief,
     )
 
-    daily_five_status = {"has_plan": False, "completed": 0, "total": 0, "completion_rate": 0.0}
-    daily_five_titles = []
     prev_xc_feedback = {"date": None, "gap_kg": None}
     if sprint:
-        try:
-            daily_five_status = get_daily_five_completion(date_key, sprint["sprint_id"], df_action)
-        except:
-            pass
-        try:
-            five_plan = load_dailyfive_cache(date_key, sprint["sprint_id"]) or {}
-            for t in list(five_plan.get("tasks", []) or [])[:5]:
-                title = str(t.get("title", "") or "").strip()
-                if title:
-                    daily_five_titles.append(title)
-        except:
-            pass
         try:
             prev_xc_feedback = get_prev_xc_feedback(sprint["sprint_id"], date_key)
         except:
@@ -7806,8 +7655,6 @@ def build_daily_wrapup_payload(
             "weight_delta": (_safe_float(sprint_progress.get("weight_delta"), 0.0) if sprint_progress else None),
             "required_daily_pace": (_safe_float(sprint_progress.get("required_daily_pace"), 0.0) if sprint_progress else None),
             "snapshot": sprint_snapshot,
-            "daily_five_status": daily_five_status,
-            "daily_five_titles": daily_five_titles,
         },
         "calendar": {
             "enabled_slots": enabled_slots,
@@ -7886,9 +7733,6 @@ def build_rule_based_wrapup(kind, payload):
     next_action = ""
 
     if kind == "daily":
-        df_stat = (((payload or {}).get("sprint", {}) or {}).get("daily_five_status", {}) or {})
-        df_done = int(df_stat.get("completed", 0))
-        df_total = int(df_stat.get("total", 0))
         xc_val = (((payload or {}).get("xc", {}) or {}).get("value_kg"))
         xc_reason = list((((payload or {}).get("xc", {}) or {}).get("reason", []) or []))
         prev_gap = (((payload or {}).get("prev_xc_feedback", {}) or {}).get("gap_kg"))
@@ -7901,8 +7745,8 @@ def build_rule_based_wrapup(kind, payload):
         pace_status = str(sprint_snapshot.get("pace_status", "") or "")
         pace_txt = {"ahead": "페이스 앞섬", "on-track": "페이스 유지", "behind": "페이스 뒤처짐"}.get(pace_status, "페이스 정보 없음")
 
-        if workouts > 0 or df_done >= 2 or (intake >= 1000 and intake <= 2200):
-            praise = f"오늘은 기록 기반 실행이 남아 있습니다. 운동 {workouts}회({minutes}분), DF {df_done}/{df_total}는 유지 자산입니다."
+        if workouts > 0 or (intake >= 1000 and intake <= 2200):
+            praise = f"오늘은 기록 기반 실행이 남아 있습니다. 운동 {workouts}회({minutes}분)과 섭취 기록이 유지 자산입니다."
         if alcohol_n > 0:
             warning = f"음주 기록 {alcohol_n}건이 확인됩니다. 내일 컨디션 하락을 전제로 보수 운영이 필요합니다."
         elif workouts <= 0 and intake >= 1800:
@@ -8344,10 +8188,6 @@ def build_rule_based_sprint_retro(payload):
     workouts = _safe_int(action.get("workout_sessions", 0), 0)
     workout_minutes = _safe_int(action.get("workout_minutes", 0), 0)
     alcohol_logs = _safe_int(action.get("alcohol_logs", 0), 0)
-    df_rates = (payload or {}).get("series", {}).get("df_completion_rate", []) or []
-    valid_df = [float(x) for x in df_rates if x is not None]
-    avg_df = float(np.mean(valid_df)) if valid_df else 0.0
-
     headline = f"{str(sprint.get('name', '') or 'Sprint')} 회고"
     overview = (
         f"{str(sprint.get('start_date', ''))}~{str(sprint.get('end_date', ''))} 동안 "
@@ -8362,14 +8202,12 @@ def build_rule_based_sprint_retro(payload):
     insights = [
         f"운동 {workouts}회, 총 {workout_minutes}분으로 행동량은 누적되었습니다.",
         f"음주 로그 {alcohol_logs}건이 체중 반등 리스크를 키웠습니다.",
-        f"DF 평균 완료율은 {avg_df * 100:.0f}%이며, behind 일수는 {int(pace_counts.get('behind', 0))}일입니다.",
+        f"페이스 뒤처짐 일수는 {int(pace_counts.get('behind', 0))}일이었습니다.",
     ]
 
     keep = []
     if workouts >= 5:
         keep.append(f"운동 루틴 유지: 스프린트 기간 {workouts}회({workout_minutes}분).")
-    if avg_df >= 0.6:
-        keep.append(f"일일 실행 유지: DF 평균 완료율 {avg_df * 100:.0f}%.")
     if alcohol_logs <= 1:
         keep.append("음주 노출이 낮아 회복 리듬을 크게 해치지 않았습니다.")
 
@@ -9115,15 +8953,6 @@ def parse_log_quick(category, user_text, log_time):
             "summary": txt[:120],
         }
 
-    if "DF" in str(category).upper():
-        marks = extract_df_marks_from_text(txt, allow_plain_numbers=True)
-        return {
-            "activity_type": "daily_five_completion",
-            "df_marks": marks,
-            "count": int(len(marks)),
-            "summary": f"Daily Five 수행 체크 ({', '.join(marks)})" if marks else "Daily Five 체크 기록",
-        }
-
     return {"summary": txt[:120]}
 
 
@@ -9171,20 +9000,6 @@ def handle_log_form_submit():
         # 액션로그 입력은 전체 캐시를 비우지 않고 Action_Log 키만 무효화해
         # 탭 전역 재조회 비용(특히 Health_Log/Sprints 재조회)을 줄인다.
         clear_sheet_cache("Action_Log")
-
-        # DF 저장 직후에는 Sprint_Daily_Tasks Completed 동기화를 즉시 수행
-        try:
-            if str(category or "").upper() == "DF":
-                sprint_now = get_active_sprint()
-                if sprint_now and sprint_now.get("sprint_id"):
-                    df_action_latest = pd.DataFrame(get_db_connection("Action_Log").get_all_records())
-                    _ = get_daily_five_completion(
-                        date_key=date_key,
-                        sprint_id=sprint_now["sprint_id"],
-                        df_action=df_action_latest,
-                    )
-        except Exception as e:
-            print("df completion immediate sync error:", e)
 
         # 액션로그 저장 직후에는 액션플랜/코칭 캐시를 강제 무효화하지 않는다.
         # (submit 체감속도 최적화) 계획 재생성은 사용자가 새로고침/재분석 시점에 수행.
@@ -9248,8 +9063,6 @@ with tab1:
 
             # 2) 오늘 액션 로그
             today_logs = df_a[df_a['Date'] == date_key]
-            if "Category" in today_logs.columns:
-                today_logs = today_logs[~today_logs["Category"].astype(str).str.upper().str.contains("DF", na=False)]
             today_acts = [f"[{r['Action_Time']}] {r['Category']}: {r['User_Input']}" for _, r in today_logs.iterrows()]
 
             # 3) Health 최신값 (w_c 먼저!)
@@ -9288,30 +9101,19 @@ with tab1:
                 print("xC error:", e)
                 xc = None
 
-            daily_five_focus = {
-                "has_plan": False,
-                "completed": 0,
-                "total": 0,
-                "completion_rate": 0.0,
-                "remaining_count": 0,
-                "remaining_tasks": [],
-                "summary_line": "DF 계획 없음",
-                "signature": "no_plan",
-            }
             if sprint and progress and daily_state:
                 try:
-                    daily_five_focus = build_daily_five_focus_snapshot(date_key, sprint["sprint_id"], df_a)
-                    daily_five_status_for_sheet = {
-                        "has_plan": bool(daily_five_focus.get("has_plan", False)),
-                        "completed": int(daily_five_focus.get("completed", 0)),
-                        "total": int(daily_five_focus.get("total", 0)),
-                        "completion_rate": float(daily_five_focus.get("completion_rate", 0.0)),
+                    daily_progress_status_for_sheet = {
+                        "has_plan": False,
+                        "completed": 0,
+                        "total": 0,
+                        "completion_rate": 0.0,
                     }
                     persist_daily_sprint_progress(
                         date_key=date_key,
                         sprint_id=sprint["sprint_id"],
                         daily_state=daily_state,
-                        daily_five_status=daily_five_status_for_sheet,
+                        progress_status=daily_progress_status_for_sheet,
                         sprint_progress=progress,
                     )
                 except Exception as e:
@@ -9399,27 +9201,6 @@ with tab1:
                 generated_at = str((ck_res or {}).get("generated_at_kst", "") or "")
                 checkin_time = generated_at[11:16] if len(generated_at) >= 16 else now_kst.strftime('%H:%M')
 
-                try:
-                    sprint = get_active_sprint()
-                    if sprint:
-                        if not load_dailyfive_cache(date_key, sprint['sprint_id']):
-                            ywr = summarize_yesterday_workout_review(df_a, date_key)
-                            five = ai_generate_daily_five(
-                                date_key,
-                                sprint,
-                                {'weight': m_weight, 'hrv': m_hrv, 'rhr': m_rhr},
-                                {'available_slots': available_slots, 'yesterday_workout_review': ywr}  # ✅ [FIX]
-                            )
-                            if five:
-                                save_dailyfive_cache(date_key, sprint['sprint_id'], five)
-                        # DF 로그가 tasks 생성보다 먼저 들어온 경우를 포함해, 렌더 시점에 완료 상태를 재동기화
-                        try:
-                            _ = get_daily_five_completion(date_key, sprint['sprint_id'], df_a)
-                        except Exception as e:
-                            print("daily five completion sync (tab1 render) error:", e)
-                except:
-                    pass
-
                 headline = polish_korean_coaching_text((ck_res or {}).get("headline") or "오늘 컨디션 체크")
                 checkin_analysis = polish_korean_coaching_text((ck_res or {}).get("analysis", "-"))
                 mission_workout = polish_korean_coaching_text(ck_res.get("mission_workout", "-"))
@@ -9489,14 +9270,12 @@ with tab1:
                 )
                 render_wrapup_block(wrapup_kind, wrapup, xc=xc)
             else:
-                daily_five_sig = str(daily_five_focus.get("signature", "") or "")
                 # ✅ [FIX] Action Plan 호출: calendar를 logs에 섞어 넣지 말고 slots로 전달
                 ap = ai_generate_action_plan(
                     hrv_c, rhr_c, w_c,
                     rt_ctx,
                     today_acts,
                     available_slots,
-                    daily_five_sig=daily_five_sig,
                 )
 
                 with st.container(border=True):
@@ -9604,18 +9383,17 @@ with tab2:
                         daily_state["urgency"] = compute_urgency(daily_state)
                     xc_value = xc.get("xc_value_kg") if xc else None
                     try:
-                        df_focus_tab2 = build_daily_five_focus_snapshot(date_key, sprint["sprint_id"], df_action_tab2)
-                        daily_five_status_tab2 = {
-                            "has_plan": bool(df_focus_tab2.get("has_plan", False)),
-                            "completed": int(df_focus_tab2.get("completed", 0)),
-                            "total": int(df_focus_tab2.get("total", 0)),
-                            "completion_rate": float(df_focus_tab2.get("completion_rate", 0.0)),
+                        daily_progress_status_tab2 = {
+                            "has_plan": False,
+                            "completed": 0,
+                            "total": 0,
+                            "completion_rate": 0.0,
                         }
                         persist_daily_sprint_progress(
                             date_key=date_key,
                             sprint_id=sprint["sprint_id"],
                             daily_state=daily_state,
-                            daily_five_status=daily_five_status_tab2,
+                            progress_status=daily_progress_status_tab2,
                             sprint_progress=progress,
                         )
                     except Exception as e:
@@ -9733,98 +9511,6 @@ with tab2:
                             else:
                                 st.caption("xC 참고값 없음")
 
-
-                    st.markdown("""<h3 style="margin-bottom: 10px;">Sprint: Daily Five <span class="time-badge">05:00 생성</span></h3>""", unsafe_allow_html=True)
-
-                    cal_events = get_today_calendar_events(date_key)
-                    available_slots = build_available_slots(date_key, cal_events)
-
-                    cached_five = load_dailyfive_cache(date_key, sprint['sprint_id'])
-                    if not cached_five:
-                        daily_five = ai_generate_daily_five(
-                            date_key,
-                            sprint,
-                            {'weight': current_weight, 'hrv': current_hrv, 'rhr': current_rhr},
-                            {
-                                'available_slots': available_slots,
-                                'yesterday_workout_review': summarize_yesterday_workout_review(df_action_tab2, date_key),
-                            }
-                        )
-                        if daily_five:
-                            save_dailyfive_cache(date_key, sprint['sprint_id'], daily_five)
-                            clear_old_caches()
-                    else:
-                        daily_five = cached_five
-
-                    # DF 로그가 먼저 저장된 경우를 포함해, 화면 진입 시 completion 컬럼을 보정
-                    try:
-                        _ = get_daily_five_completion(date_key, sprint['sprint_id'], df_action_tab2)
-                    except Exception as e:
-                        print("daily five completion sync (tab2 render) error:", e)
-
-                    if daily_five and 'tasks' in daily_five:
-
-                        if daily_five.get('daily_message'):
-                            urgency = daily_five.get('urgency_level', 'medium')
-                            if urgency == 'high':
-                                st.error(daily_five['daily_message'])
-                            elif urgency == 'low':
-                                st.success(daily_five['daily_message'])
-                            else:
-                                st.info(daily_five['daily_message'])
-
-                        st.write("")
-
-                        done_map = {}
-                        try:
-                            today_logs_tab2 = (
-                                df_action_tab2[df_action_tab2["Date"] == date_key]
-                                if ("Date" in df_action_tab2.columns) else df_action_tab2
-                            )
-                            marks_tab2 = collect_dailyfive_completion_marks(today_logs_tab2)
-                            done_rows_tab2 = build_dailyfive_done_rows(daily_five.get("tasks", []), marks_tab2)
-                            done_map = {int(r.get("index", 0)): bool(r.get("done")) for r in done_rows_tab2}
-                        except Exception:
-                            done_map = {}
-
-                        for idx, task in enumerate(daily_five['tasks'], start=1):
-                            done = bool(done_map.get(idx, False))
-                            icon = "✅" if done else "⬜"
-                            display_title = polish_korean_coaching_text(str(task.get("title", "") or "").strip())
-                            display_desc = polish_korean_coaching_text(str(task.get("description", "") or "").strip())
-                            display_why = polish_korean_coaching_text(str(task.get("why", "") or "").strip())
-                            if done:
-                                bg_color = "#111a2b"
-                                title_color = "#cbd5e1"
-                                done_badge = '<span style="font-size:11px; font-weight:700; color:#dbeafe; background:#334155; border-radius:8px; padding:2px 8px; margin-left:8px;">완료</span>'
-                            else:
-                                bg_color = "#0d1627"
-                                title_color = "#f8fafc"
-                                done_badge = ""
-
-                            task_html = f"""
-                            <div style="background: {bg_color}; padding: 16px; border-radius: 12px; border: 1px solid #1f2d46; border-left: 4px solid #4b83d6; margin-bottom: 10px;">
-                            <div style="display: flex; align-items: flex-start; gap: 12px;">
-                            <div style="font-size: 24px; line-height: 1;">{icon}</div>
-                            <div style="flex: 1;">
-                            <div style="font-weight: 700; color: {title_color}; font-size: 16px; margin-bottom: 6px;">{display_title}{done_badge}</div>
-                            <div style="font-size: 13px; color: #9fb0c6; margin-bottom: 2px;">{display_desc}</div>
-                            {f'<div style="font-size: 12px; color: #7f93b0; font-style: italic;">💡 {display_why}</div>' if display_why else ''}
-                            </div>
-                            </div>
-                            </div>
-                            """
-                            st.markdown(task_html, unsafe_allow_html=True)
-
-                    else:
-                        st.warning("데일리 파이브 생성 실패")
-                        try:
-                            last_df_err = str(st.session_state.get("_daily_five_last_error", "") or "").strip()
-                            if last_df_err:
-                                st.caption(f"원인: {last_df_err[:220]}")
-                        except Exception:
-                            pass
-
         except Exception as e:
             st.error(f"Error: {e}")
             import traceback
@@ -9898,7 +9584,7 @@ with tab3:
     default_hour = now_kst.hour
     default_minute = (now_kst.minute // 5) * 5
 
-    categories = ["섭취", "운동", "음주", "영양제", "회복", "노트", "DF"]
+    categories = ["섭취", "운동", "음주", "영양제", "회복", "노트"]
 
     with st.container(border=True):
         with st.form("log_form", clear_on_submit=True):
