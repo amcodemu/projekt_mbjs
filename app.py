@@ -5647,31 +5647,15 @@ def _coaching_json_completion(
 def _action_plan_chat_completion_json(prompt):
     provider = str(ACTION_PLAN_PROVIDER or "openai").strip().lower()
     if provider == "anthropic":
-        if not ANTHROPIC_API_KEY:
-            raise RuntimeError("Anthropic API key is missing")
-        try:
-            import anthropic  # type: ignore
-        except Exception as ie:
-            raise RuntimeError(f"anthropic package not installed: {ie}")
-
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = _anthropic_messages_create_with_fallback(
-            client,
-            preferred_model=ACTION_PLAN_MODEL_ANTHROPIC,
+        # Action Plan도 코칭 공통 JSON 복구 파이프라인(다단계 재시도)을 사용해
+        # "JSON object 미포함" 오류 재발률을 낮춘다.
+        return _coaching_json_completion(
+            prompt=prompt,
+            provider="anthropic",
+            model_anthropic=ACTION_PLAN_MODEL_ANTHROPIC,
             max_tokens=520,
-            temperature=0.6,
-            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
         )
-        parts = []
-        for b in list(getattr(resp, "content", []) or []):
-            t = getattr(b, "text", None)
-            if t:
-                parts.append(str(t))
-        raw = "\n".join(parts).strip()
-        parsed = _parse_json_object_from_ai_text(raw)
-        if parsed is not None:
-            return parsed
-        raise RuntimeError("Claude response did not contain JSON object")
 
     client = OpenAI(api_key=OPENAI_API_KEY)
     response = client.chat.completions.create(
