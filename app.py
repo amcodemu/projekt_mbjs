@@ -7027,13 +7027,15 @@ def ai_parse_log(category, user_text, log_time, ref_data=""):
         "밀크시슬": "SAT 실리빈 150mg+아티초크 150mg+커큐민 150mg",
         "락토핏": "유산균 20억 CFU + 아연 2.55mg",
         "오메가3": "EPA+DHA 1000mg + 비타민E 11mg",
-        "비타민D3": "비타민D 100µg"
+        "비타민D3": "비타민D 100µg",
+        "피크노제놀": "Pycnogenol"
     }
 
     if "영양제" in category:
+        txt_norm = re.sub(r"\s+", "", str(user_text or "")).lower()
         matched_info = []
         for name, detail in MY_SUPPLEMENTS.items():
-            if name in user_text:
+            if re.sub(r"\s+", "", name).lower() in txt_norm:
                 matched_info.append(detail)
 
         info_str = "\n".join(matched_info) if matched_info else "정보 없음"
@@ -7348,6 +7350,59 @@ def parse_log_quick(category, user_text, log_time):
     if not txt:
         return {"summary": ""}
 
+    def _normalize_supp_text(s):
+        # 영양제 문자열 비교용 정규화: 공백/하이픈 제거 + 소문자화
+        return re.sub(r"[\s\-_/]+", "", str(s or "")).lower()
+
+    def _extract_supplements(text):
+        alias_map = {
+            "오메가3": ["오메가3", "omega3", "rtg오메가3", "epa", "dha"],
+            "비타민D3": ["비타민d3", "vitamind3", "d34000iu", "d3"],
+            "마그네슘": ["마그네슘", "magnesium"],
+            "밀크시슬": ["밀크시슬", "milkthistle", "s.a.t", "sat"],
+            "락토핏": ["락토핏", "프로바이오틱스", "probiotic", "유산균"],
+            "피크노제놀": ["피크노제놀", "pycnogenol"],
+            "L-카르니틴": ["l카르니틴", "lcarnitine", "카르니틴"],
+            "비타민B": ["비타민b", "bcomplex", "비컴플렉스", "b-complex"],
+        }
+        alias_lookup = {}
+        for canonical, aliases in alias_map.items():
+            alias_lookup[_normalize_supp_text(canonical)] = canonical
+            for a in aliases:
+                alias_lookup[_normalize_supp_text(a)] = canonical
+
+        # 1) 입력 문자열을 구분자 기준으로 먼저 분리 (요청하신 방식)
+        parts = re.split(r"\s*(?:,|/|\+|&|;|\n|그리고|및)\s*", str(text or ""))
+
+        cleaned = []
+        for p in parts:
+            s = str(p or "").strip()
+            if not s:
+                continue
+            # 부가 표현/용량 표기 제거
+            s = re.sub(r"\([^)]*\)", "", s)
+            s = re.sub(r"(복용완료|복용|섭취|먹음|먹었다|완료|추가)", "", s, flags=re.IGNORECASE)
+            s = re.sub(r"\d+\s*(정|캡슐|포|알|mg|g|iu|ml)", "", s, flags=re.IGNORECASE)
+            s = re.sub(r"\s+", " ", s).strip(" ,./+")
+            if s:
+                cleaned.append(s)
+
+        # 2) 분리된 항목을 기준으로 canonical 매핑 (알 수 없는 영양제는 원문 유지)
+        out = []
+        for item in cleaned:
+            canon = alias_lookup.get(_normalize_supp_text(item), item)
+            if canon and canon not in out:
+                out.append(canon)
+
+        # 3) 구분자가 없고 문장형 입력일 때 known alias를 본문에서 추출
+        if not out:
+            norm_full = _normalize_supp_text(text)
+            for alias_norm, canon in alias_lookup.items():
+                if alias_norm and alias_norm in norm_full and canon not in out:
+                    out.append(canon)
+
+        return out
+
     def _first_int(pattern, default=0):
         m = re.search(pattern, txt, flags=re.IGNORECASE)
         return int(m.group(1)) if m else default
@@ -7520,8 +7575,7 @@ def parse_log_quick(category, user_text, log_time):
         }
 
     if "영양제" in category:
-        known = ["마그네슘", "밀크시슬", "락토핏", "오메가3", "비타민D3"]
-        supplements = [k for k in known if k in txt]
+        supplements = _extract_supplements(txt)
         return {
             "supplements": supplements,
             "count": int(len(supplements)),
